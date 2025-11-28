@@ -13,9 +13,3 @@ Bu bot orqali foydalanuvchilar kinolarni kod orqali topishi, qismlarini ko‘ris
   - Repair (video yangilash)
   - Migratsiya (legacy formatni yangilash)
 
-## 📦 O‘rnatish
-
-1. Repozitoriyani klon qiling:
-   ```bash
-   git clone https://github.com/<username>/<repo-name>.git
-   cd <repo-name>
