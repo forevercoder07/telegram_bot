@@ -30,7 +30,7 @@
         "video": "BAACAgQAAxkBAANHaRdZ7ZOkkTB5b6dfQjEPMxvGdcsAAo0YAAIzW7BQOAYMjQqgrb42BA"
       }
     ],
-    "views": 5
+    "views": 7
   },
   "4": {
     "title": "Yashil qovoq ari",
@@ -41,6 +41,28 @@
         "video": "BAACAgQAAxkBAAIBaWkop3gaR1gSlScU1xvYoqzGUIkFAAIsFQACTn6pUCA-NAsPAjmDNgQ"
       }
     ],
-    "views": 1
+    "views": 2
+  },
+  "5": {
+    "title": "Parallel olamdagi muhabbat",
+    "parts": [
+      {
+        "title": "Parallel olamdagi muhabbat",
+        "description": "Ajoyib komedik va 18+ film.\n📽 Filmda ikki parallel olamdi juftlik bir birini yoqtirib qolishidi va o'zlari haqida turlicha tanishishadi.",
+        "video": "BAACAgIAAxkBAAICoGkv3FN2nz_7a3eCxtwnsaLcPXlkAAKXhAACogZhSXt7M4kAAQpWTzYE"
+      }
+    ],
+    "views": 0
+  },
+  "6": {
+    "title": "Kichkina qahramon",
+    "parts": [
+      {
+        "title": "Kichkina qahramon",
+        "description": "Maroqli hordiq tilaymiz",
+        "video": "BAACAgIAAxkBAAICp2kv4YgIstsd3vQTavFXXG34aVlXAANRAAJ6NwFL_lGYVQvbYIQ2BA"
+      }
+    ],
+    "views": 0
   }
 }
