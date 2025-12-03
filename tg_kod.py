@@ -1,6 +1,7 @@
 import json
 import asyncio
 import random
+import os  # <-- YANGI: Environment Variables o'qish uchun
 from typing import Optional
 from aiogram import Bot, Dispatcher
 from aiogram.types import (
@@ -14,15 +15,37 @@ from aiogram.types import (
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 
-# --- Konfiguratsiya ---
-BOT_TOKEN = "8584498135:AAEBHpJbcdL6le6wn9GfzBGGsV-iJLsDx5Y"   # <-- tokenni shu yerga qo'ying
-ADMIN_ID = 1629210003               # <-- o'zingizning Telegram ID raqamingiz
+# Webhook uchun yangi importlar
+from aiohttp import web 
+from aiogram.dispatcher.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+
+# --- Webhook Konfiguratsiya (Polling o'rniga) ---
+# BOT_TOKEN endi ENV variable orqali olinadi, lekin eski usulni ham qoldiramiz.
+# Lekin Renderda faqat ENV ishlatish kerak!
+# BOT_TOKEN ni global o'zgaruvchilardan olib tashlang va quyidagicha o'zgartiring:
+
+# Bot tokeni Environment Variable orqali olinadi
+# Agar ENV sozlanmagan bo'lsa, xato beradi yoki o'rnatilgan tokendan foydalanadi (Test uchun)
+BOT_TOKEN_ENV = os.getenv("BOT_TOKEN", "8584498135:AAFTzRZHOnh5ZR_AAyXsSJkX2u8hStXkLmg") 
+
+# Renderdan olinadigan URL va Port
+BASE_WEBHOOK_URL = os.getenv("RENDER_URL") # Masalan: https://kino-bot.onrender.com
+WEB_SERVER_PORT = int(os.getenv("PORT", 8080)) # Render bergan port
+
+# Telegramga o'rnatiladigan Webhook manzili
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN_ENV}"
+WEBHOOK_URL = f"{BASE_WEBHOOK_URL}{WEBHOOK_PATH}" if BASE_WEBHOOK_URL else None
+WEB_SERVER_HOST = "0.0.0.0" 
+
+# --- KONFIGURATSIYA ---
+ADMIN_ID = 1629210003 
 MOVIE_FILE = "movies.json"
 SETTINGS_FILE = "settings.json"
 
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(token=BOT_TOKEN_ENV)
 dp = Dispatcher()
 
+# ... (Qolgan barcha funksiyalar va handlerlar o'zgarishsiz qoladi) ...
 # --- Per-user state konteynerlari (oddiy dict bilan) ---
 user_waiting_code: dict[int, bool] = {}
 user_waiting_part: dict[int, bool] = {}
@@ -136,7 +159,7 @@ MAIN_BUTTONS_USER = [
     [KeyboardButton(text="🎬 Kino topish")],
     [KeyboardButton(text="📊 Statistika")],
     [KeyboardButton(text="📽 Kino tavsiyasi")],
-    [KeyboardButton(text="📩 Adminga murojat")]
+    [KeyboardButton(text="📩 Adminga murojaat")]
 ]
 
 MAIN_BUTTONS_ADMIN = [
@@ -300,12 +323,9 @@ async def btn_recommend(message: Message):
         await message.answer("Hali kinolar qo‘shilmagan.")
 
 # --- Adminga murojaat ---
-@dp.message(lambda m: m.text == "📩 Adminga murojat")
+@dp.message(lambda m: m.text == "📩 Adminga murojaat")
 async def btn_contact(message: Message):
-    await message.answer("\t\t\t🚀 Loyihalar Kanali\n\n"
-                         "Yangi g‘oyalar, foydali dasturlar va kreativ loyihalar bir joyda!\n\n"
-                         "💡 Qiziqarli, sodda va amaliy – har doim yangilanadi!\n\n"
-                         "https://t.me/forever_projects")
+    await message.answer("Adminga murojaat: https://t.me/mr_forever777")
 
 # --- Asosiy menyuga qaytish ---
 @dp.message(lambda m: m.text == "🔙 Asosiy menyu")
@@ -612,5 +632,61 @@ def increment_view(code: str):
         save_movies(movies)
 
 # --- Main ---
+# --- 3. WEBHOOK LOGIKASI ---
+
+async def on_startup(dispatcher: Dispatcher, bot: Bot) -> None:
+    """Server ishga tushganda Webhook manzilini Telegramga o'rnatadi."""
+    if WEBHOOK_URL:
+        await bot.set_webhook(WEBHOOK_URL)
+        print(f"Webhook muvaffaqiyatli o'rnatildi: {WEBHOOK_URL}")
+    else:
+        print("WEBHOOK_URL sozlanmagan. Polling rejimida ishlashni afzal biling.")
+
+async def on_shutdown(dispatcher: Dispatcher, bot: Bot) -> None:
+    """Server o'chirilganda Webhookni Telegramdan o'chiradi."""
+    await bot.delete_webhook()
+    print("Webhook o'chirildi.")
+    
+# Render Health Check (Sog'liqni tekshirish) uchun oddiy GET rute
+async def health_check(request: web.Request) -> web.Response:
+    """Render so'raganda OK deb javob qaytaradi."""
+    return web.Response(text="OK")
+
+# --- 4. ASOSIY ISHGA TUSHIRISH FUNKSIYASI ---
+
+def main():
+    if not all([BOT_TOKEN_ENV, BASE_WEBHOOK_URL]):
+         # Agar Webhook uchun zaruriy ENV variables sozlanmagan bo'lsa, Pollingni ishlatamiz (Local test uchun)
+         # Renderda bu kod faqat Polling rejimida ishlaydi, bu yaxshi emas.
+         # Agar Renderda ishlashni istasangiz, pastdagi raise ValueError ni faollashtiring.
+         print("❌ Webhook ENV variables (BOT_TOKEN, RENDER_URL) topilmadi. Polling rejimiga qaytildi.")
+         asyncio.run(dp.start_polling(bot))
+         return
+
+    # DP ga ishga tushirish/o'chirish funksiyalarini ulash
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
+    
+    # Aiohttp ilovasini yaratish
+    app = web.Application()
+    
+    # Aiogram Request Handlerni Aiohttpga ulash
+    handler = SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+        # Agar kerak bo'lsa, webhook_process_kwargs = {'timeout': 55} qo'shish mumkin
+    )
+    handler.register(app, WEBHOOK_PATH)
+    
+    # Render Health Check (Sog'liqni tekshirish) uchun "/" rutini qo'shish
+    app.router.add_get("/", health_check)
+
+    # Aiohttp serverini ishga tushirish
+    web.run_app(
+        app,
+        host=WEB_SERVER_HOST,
+        port=WEB_SERVER_PORT,
+    )
+
 if __name__ == "__main__":
-    asyncio.run(dp.start_polling(bot))
+    main()
