@@ -2,19 +2,16 @@ import json
 import os
 import asyncio
 from aiogram import Bot, Dispatcher
-from aiogram.types import (
-    Message, ReplyKeyboardMarkup, KeyboardButton,
-    InlineKeyboardMarkup, InlineKeyboardButton
-)
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import CommandStart
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler
 from aiohttp import web
 
 # --- Config ---
-BOT_TOKEN = os.getenv("BOT_TOKEN", "TOKENINGIZNI_BUYERGA_QOYING")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 BASE_WEBHOOK_URL = os.getenv("BASE_WEBHOOK_URL")  # Render URL
-PORT = int(os.getenv("PORT", 10000))
+PORT = int(os.getenv("PORT", 8080))  # Render avtomatik beradi
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = f"{BASE_WEBHOOK_URL}{WEBHOOK_PATH}" if BASE_WEBHOOK_URL else None
 
@@ -24,9 +21,7 @@ dp = Dispatcher()
 MOVIES_FILE = "movies.json"
 SETTINGS_FILE = "settings.json"
 
-# --- User state ---
 user_waiting_code = {}
-user_waiting_part = {}
 
 # --- Helper functions ---
 def load_movies():
@@ -46,10 +41,6 @@ def load_settings():
             return json.load(f)
     except:
         return {"channels": []}
-
-def save_settings(settings):
-    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(settings, f, ensure_ascii=False, indent=2)
 
 def get_channels():
     return load_settings().get("channels", [])
@@ -72,6 +63,7 @@ def main_menu(is_admin=False):
         buttons.extend(admin_buttons)
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
+# --- Subscription check ---
 async def is_subscribed_all(user_id):
     channels = get_channels()
     if not channels:
@@ -115,14 +107,7 @@ async def btn_search(message: Message):
     user_waiting_code[user_id] = True
     await message.answer("Kino kodini kiriting:")
 
-@dp.message(lambda m: m.text == "🔙 Asosiy menyu")
-async def back_main(message: Message):
-    user_id = message.from_user.id
-    kb = main_menu(is_admin=(user_id == ADMIN_ID))
-    user_waiting_code.pop(user_id, None)
-    await message.answer("Asosiy menyu:", reply_markup=kb)
-
-# --- Webhook / Health ---
+# --- Polling / Webhook ---
 async def on_startup(dispatcher: Dispatcher, bot: Bot):
     if WEBHOOK_URL:
         await bot.set_webhook(WEBHOOK_URL)
@@ -140,7 +125,6 @@ def main():
         print("❌ Webhook URL yo'q, polling ishlatiladi.")
         asyncio.run(dp.start_polling(bot))
         return
-
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
 
@@ -148,7 +132,6 @@ def main():
     handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
     handler.register(app, WEBHOOK_PATH)
     app.router.add_get("/", health_check)
-
     web.run_app(app, host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
