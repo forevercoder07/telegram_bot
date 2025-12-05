@@ -1,7 +1,7 @@
 import json
 import asyncio
 import random
-import os  # <-- YANGI: Environment Variables o'qish uchun
+import os  # <-- environment variables o'qish uchun
 from typing import Optional
 from aiogram import Bot, Dispatcher
 from aiogram.types import (
@@ -15,38 +15,29 @@ from aiogram.types import (
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 
-# Webhook uchun yangi importlar
-from aiohttp import web 
-from aiogram.dispatcher.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+# Webhook uchun aiogram 3.x import (to'g'ri yo'l)
+from aiohttp import web
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 # --- Webhook Konfiguratsiya (Polling o'rniga) ---
-# BOT_TOKEN endi ENV variable orqali olinadi, lekin eski usulni ham qoldiramiz.
-# Lekin Renderda faqat ENV ishlatish kerak!
-# BOT_TOKEN ni global o'zgaruvchilardan olib tashlang va quyidagicha o'zgartiring:
+BOT_TOKEN_ENV = os.getenv("BOT_TOKEN", "8584498135:AAFTzRZHOnh5ZR_AAyXsSJkX2u8hStXkLmg")
 
-# Bot tokeni Environment Variable orqali olinadi
-# Agar ENV sozlanmagan bo'lsa, xato beradi yoki o'rnatilgan tokendan foydalanadi (Test uchun)
-BOT_TOKEN_ENV = os.getenv("BOT_TOKEN", "8584498135:AAFTzRZHOnh5ZR_AAyXsSJkX2u8hStXkLmg") 
-
-# Renderdan olinadigan URL va Port
-BASE_WEBHOOK_URL = os.getenv("RENDER_URL") # Masalan: https://kino-bot.onrender.com
-WEB_SERVER_PORT = int(os.getenv("PORT", 8080)) # Render bergan port
-
-# Telegramga o'rnatiladigan Webhook manzili
+BASE_WEBHOOK_URL = os.getenv("RENDER_URL")  # Masalan: https://kino-bot.onrender.com
+WEB_SERVER_PORT = int(os.getenv("PORT", 8080))
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN_ENV}"
 WEBHOOK_URL = f"{BASE_WEBHOOK_URL}{WEBHOOK_PATH}" if BASE_WEBHOOK_URL else None
-WEB_SERVER_HOST = "0.0.0.0" 
+WEB_SERVER_HOST = "0.0.0.0"
 
 # --- KONFIGURATSIYA ---
-ADMIN_ID = 1629210003 
+ADMIN_ID = 1629210003
 MOVIE_FILE = "movies.json"
 SETTINGS_FILE = "settings.json"
 
+# Bot va Dispatcher (aiogram 3.x)
 bot = Bot(token=BOT_TOKEN_ENV)
 dp = Dispatcher()
 
-# ... (Qolgan barcha funksiyalar va handlerlar o'zgarishsiz qoladi) ...
-# --- Per-user state konteynerlari (oddiy dict bilan) ---
+# --- Per-user state konteynerlari ---
 user_waiting_code: dict[int, bool] = {}
 user_waiting_part: dict[int, bool] = {}
 user_current_code: dict[int, str] = {}
@@ -223,12 +214,10 @@ def is_button_text(text: str) -> bool:
         return True
     if text.endswith("-qism") and text[:-5].isdigit():
         return True
-    # raqamli javoblar qism tanlash kontekstida handle_text_flow tomonidan qabul qilinadi,
-    # shu sababli bu yerda faqat "-qism" formatini tugma deb hisoblaymiz.
     return False
 
 # --- Start handler ---
-@dp.message(Command("start"))
+@dp.message.register(Command("start"))
 async def cmd_start(message: Message):
     user_id = message.from_user.id
     user_waiting_code.pop(user_id, None)
@@ -260,7 +249,7 @@ async def cmd_start(message: Message):
     await message.answer(welcome_text, reply_markup=kb)
 
 # --- Kino topish bosilganda obuna tekshiruvi va kod kiritish rejimi ---
-@dp.message(lambda m: m.text == "🎬 Kino topish")
+@dp.message.register(lambda m: m.text == "🎬 Kino topish")
 async def btn_search(message: Message):
     user_id = message.from_user.id
     ok, _ = await is_subscribed_all_diagnostic(user_id)
@@ -273,7 +262,7 @@ async def btn_search(message: Message):
     await message.answer("Kino kodini kiriting:")
 
 # --- Statistika ---
-@dp.message(lambda m: m.text == "📊 Statistika")
+@dp.message.register(lambda m: m.text == "📊 Statistika")
 async def btn_stats(message: Message):
     ok, _ = await is_subscribed_all_diagnostic(message.from_user.id)
     if not ok:
@@ -290,7 +279,7 @@ async def btn_stats(message: Message):
     await message.answer("\n".join(lines))
 
 # --- Tavsiya ---
-@dp.message(lambda m: m.text == "📽 Kino tavsiyasi")
+@dp.message.register(lambda m: m.text == "📽 Kino tavsiyasi")
 async def btn_recommend(message: Message):
     ok, _ = await is_subscribed_all_diagnostic(message.from_user.id)
     if not ok:
@@ -323,12 +312,12 @@ async def btn_recommend(message: Message):
         await message.answer("Hali kinolar qo‘shilmagan.")
 
 # --- Adminga murojaat ---
-@dp.message(lambda m: m.text == "📩 Adminga murojaat")
+@dp.message.register(lambda m: m.text == "📩 Adminga murojaat")
 async def btn_contact(message: Message):
     await message.answer("Adminga murojaat: https://t.me/mr_forever777")
 
 # --- Asosiy menyuga qaytish ---
-@dp.message(lambda m: m.text == "🔙 Asosiy menyu")
+@dp.message.register(lambda m: m.text == "🔙 Asosiy menyu")
 async def btn_back_to_main(message: Message):
     user_id = message.from_user.id
     user_waiting_part.pop(user_id, None)
@@ -338,16 +327,16 @@ async def btn_back_to_main(message: Message):
     await message.answer("Asosiy menyu.", reply_markup=kb)
 
 # --- Admin: kino qo'shish (video -> Kod|Qism|Sharh) ---
-@dp.message(lambda m: m.text == "➕ Kino qo‘shish" and m.from_user.id == ADMIN_ID)
+@dp.message.register(lambda m: m.text == "➕ Kino qo‘shish" and m.from_user.id == ADMIN_ID)
 async def btn_add_movie(message: Message):
     await message.answer("Videoni yuboring, keyin matn yuboring: Kod | Qism nomi | Sharh")
 
-@dp.message(lambda m: m.video and m.from_user.id == ADMIN_ID)
+@dp.message.register(lambda m: m.video and m.from_user.id == ADMIN_ID)
 async def admin_receive_video(message: Message):
     admin_temp_video[message.from_user.id] = message.video.file_id
     await message.answer("✅ Video qabul qilindi.\nEndi matn yuboring: Kod | Qism nomi | Sharh")
 
-@dp.message(lambda m: m.text and "|" in m.text and m.from_user.id == ADMIN_ID)
+@dp.message.register(lambda m: m.text and "|" in m.text and m.from_user.id == ADMIN_ID)
 async def admin_receive_info(message: Message):
     try:
         code, part_title, desc = map(str.strip, message.text.split("|", maxsplit=2))
@@ -371,7 +360,7 @@ async def admin_receive_info(message: Message):
         await message.answer("❌ Format noto‘g‘ri. To‘g‘ri format: Kod | Qism nomi | Sharh")
 
 # --- Admin: barcha kinolar ro'yxati ---
-@dp.message(lambda m: m.text == "📚 Barcha kinolar" and m.from_user.id == ADMIN_ID)
+@dp.message.register(lambda m: m.text == "📚 Barcha kinolar" and m.from_user.id == ADMIN_ID)
 async def btn_list_movies(message: Message):
     movies = load_movies()
     if not movies:
@@ -385,7 +374,7 @@ async def btn_list_movies(message: Message):
         await message.answer(text[i:i+3500])
 
 # --- Admin: Kanallarni boshqarish boshlash ---
-@dp.message(lambda m: m.text == "⚙️ Kanallarni boshqarish" and m.from_user.id == ADMIN_ID)
+@dp.message.register(lambda m: m.text == "⚙️ Kanallarni boshqarish" and m.from_user.id == ADMIN_ID)
 async def edit_channels_start(message: Message):
     current = get_channels()
     existing = "\n".join(f"{i+1}-kanal: {ch}" for i, ch in enumerate(current, start=1)) if current else "— Mavjud emas —"
@@ -393,12 +382,11 @@ async def edit_channels_start(message: Message):
         "Kanallar ro‘yxatini yuboring (har birini alohida qatorda).\nQabul qilinadi: @kanal yoki https://t.me/kanal\n\n"
         f"Hozirgi ro‘yxat:\n{existing}"
     )
-    # Belgilaymiz: admin keyingi matnni kanallar ro'yxati sifatida yuboradi
     user_waiting_code[message.from_user.id] = False
     user_waiting_part[message.from_user.id] = False
     user_current_code[message.from_user.id] = "__editing_channels__"
 
-@dp.message(lambda m: m.from_user.id == ADMIN_ID and m.text and m.text.strip() and user_current_code.get(m.from_user.id) == "__editing_channels__")
+@dp.message.register(lambda m: m.from_user.id == ADMIN_ID and m.text and m.text.strip() and user_current_code.get(m.from_user.id) == "__editing_channels__")
 async def edit_channels_apply(message: Message):
     lines = [ln.strip() for ln in message.text.splitlines() if ln.strip()]
     channels = []
@@ -414,7 +402,7 @@ async def edit_channels_apply(message: Message):
     await message.answer("✅ Kanallar yangilandi. Foydalanuvchilarga ko‘rinishi:", reply_markup=kb)
 
 # --- Check subscription callback from inline panel ---
-@dp.callback_query(lambda c: c.data == "check_sub")
+@dp.callback_query.register(lambda c: c.data == "check_sub")
 async def check_subscription(callback: CallbackQuery):
     ok, info = await is_subscribed_all_diagnostic(callback.from_user.id)
     if ok:
@@ -434,11 +422,11 @@ async def check_subscription(callback: CallbackQuery):
         await send_subscription_panel(callback)
 
 # --- Admin: repair info and command ---
-@dp.message(lambda m: m.text == "🛠 Repair" and m.from_user.id == ADMIN_ID)
+@dp.message.register(lambda m: m.text == "🛠 Repair" and m.from_user.id == ADMIN_ID)
 async def btn_repair_help(message: Message):
     await message.answer("Foydalanish: /repair <KOD> yoki /repair <KOD> <QISM_RAQAMI>\nBuyruqdan so‘ng yangi videoni yuboring — u belgilangan qismga bog‘lanadi.")
 
-@dp.message(Command("repair"))
+@dp.message.register(Command("repair"))
 async def cmd_repair(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
@@ -457,7 +445,7 @@ async def cmd_repair(message: Message):
     admin_repair_code[message.from_user.id] = json.dumps({"code": code, "part": qism_index})
     await message.answer(f"✅ Kod {code} uchun video qabul qilish rejimi yoqildi. Yangi videoni yuboring.")
 
-@dp.message(lambda m: m.video and m.from_user.id == ADMIN_ID and m.from_user.id in admin_repair_code)
+@dp.message.register(lambda m: m.video and m.from_user.id == ADMIN_ID and m.from_user.id in admin_repair_code)
 async def admin_receive_repair_video(message: Message):
     raw = admin_repair_code.pop(message.from_user.id, None)
     if not raw:
@@ -486,11 +474,11 @@ async def admin_receive_repair_video(message: Message):
     await message.answer("✅ Video yangilandi va saqlandi.")
 
 # --- Migrate buyruq ---
-@dp.message(lambda m: m.text == "🔁 Migratsiya" and m.from_user.id == ADMIN_ID)
+@dp.message.register(lambda m: m.text == "🔁 Migratsiya" and m.from_user.id == ADMIN_ID)
 async def btn_migrate_help(message: Message):
     await cmd_migrate(message)
 
-@dp.message(Command("migrate"))
+@dp.message.register(Command("migrate"))
 async def cmd_migrate(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
@@ -515,7 +503,7 @@ async def cmd_migrate(message: Message):
         await message.answer("ℹ️ Migratsiya kerak emas: legacy yozuv topilmadi.")
 
 # --- Umumiy matn oqimi: kod kiritish va qism tanlash ---
-@dp.message(lambda m: m.text and not is_button_text(m.text))
+@dp.message.register(lambda m: m.text and not is_button_text(m.text))
 async def handle_text_flow(message: Message):
     text = message.text.strip()
     user_id = message.from_user.id
@@ -646,7 +634,7 @@ async def on_shutdown(dispatcher: Dispatcher, bot: Bot) -> None:
     """Server o'chirilganda Webhookni Telegramdan o'chiradi."""
     await bot.delete_webhook()
     print("Webhook o'chirildi.")
-    
+
 # Render Health Check (Sog'liqni tekshirish) uchun oddiy GET rute
 async def health_check(request: web.Request) -> web.Response:
     """Render so'raganda OK deb javob qaytaradi."""
@@ -656,29 +644,23 @@ async def health_check(request: web.Request) -> web.Response:
 
 def main():
     if not all([BOT_TOKEN_ENV, BASE_WEBHOOK_URL]):
-         # Agar Webhook uchun zaruriy ENV variables sozlanmagan bo'lsa, Pollingni ishlatamiz (Local test uchun)
-         # Renderda bu kod faqat Polling rejimida ishlaydi, bu yaxshi emas.
-         # Agar Renderda ishlashni istasangiz, pastdagi raise ValueError ni faollashtiring.
-         print("❌ Webhook ENV variables (BOT_TOKEN, RENDER_URL) topilmadi. Polling rejimiga qaytildi.")
-         asyncio.run(dp.start_polling(bot))
-         return
+        print("❌ Webhook ENV variables (BOT_TOKEN, RENDER_URL) topilmadi. Polling rejimiga qaytildi.")
+        # aiogram 3.x uchun polling:
+        asyncio.run(dp.start_polling(bot))
+        return
 
     # DP ga ishga tushirish/o'chirish funksiyalarini ulash
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
-    
+
     # Aiohttp ilovasini yaratish
     app = web.Application()
-    
-    # Aiogram Request Handlerni Aiohttpga ulash
-    handler = SimpleRequestHandler(
-        dispatcher=dp,
-        bot=bot,
-        # Agar kerak bo'lsa, webhook_process_kwargs = {'timeout': 55} qo'shish mumkin
-    )
+
+    # Aiogram SimpleRequestHandlerni Aiohttpga ulash (aiogram 3.x path ishlaydi)
+    handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
     handler.register(app, WEBHOOK_PATH)
-    
-    # Render Health Check (Sog'liqni tekshirish) uchun "/" rutini qo'shish
+
+    # Render Health Check uchun "/" rutini qo'shish
     app.router.add_get("/", health_check)
 
     # Aiohttp serverini ishga tushirish
