@@ -304,7 +304,7 @@ async def btn_recommend(message: Message):
 
 @dp.message(lambda m: m.text == "📩 Adminga murojaat")
 async def btn_contact(message: Message):
-    await message.answer("Adminga murojaat: https://t.me/mr_forever777")
+    await message.answer("Adminga murojaat: https://t.me/forever_projects")
 
 @dp.message(lambda m: m.text == "🔙 Asosiy menyu")
 async def btn_back_to_main(message: Message):
