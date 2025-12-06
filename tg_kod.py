@@ -605,9 +605,10 @@ async def on_startup(app: web.Application):
         print(f"ℹ️ Webhook allaqachon o'rnatilgan: {WEBHOOK_URL}")
 
 async def on_shutdown(app: web.Application):
-    """Webhook o'chirish"""
-    await bot.delete_webhook()
-    print("🛑 Webhook o'chirildi")
+    """Shutdown"""
+    await bot.session.close()
+    print("🛑 Bot sessiyasi yopildi")
+
 
 # --- Main function ---
 def main():
