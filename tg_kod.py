@@ -11,7 +11,6 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     CallbackQuery,
-    Update,
 )
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
@@ -106,36 +105,65 @@ def save_settings(settings: dict):
     with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(settings, f, ensure_ascii=False, indent=2)
 
-def get_channels() -> list:
+def get_channels() -> list[str]:
+    # Har bir element: "@username" yoki "https://t.me/+invitecode"
     return load_settings().get("channels", [])
 
-def save_channels_list(channels: list):
+def save_channels_list(channels: list[str]):
     settings = load_settings()
     settings["channels"] = channels
     save_settings(settings)
+
+# --- Invite-link aniqlash ---
+def is_invite_link(s: str) -> bool:
+    s = s.strip()
+    if s.startswith("http://") or s.startswith("https://"):
+        return ("t.me/" in s) and ("/+" in s or s.startswith("https://t.me/+") or s.startswith("http://t.me/+"))
+    return False
+
+def normalize_channel_input(s: str) -> str:
+    s = s.strip()
+    if s.startswith("http://") or s.startswith("https://"):
+        # t.me/username yoki t.me/+invitecode ni saqlab qo'yish
+        return s.rstrip("/")
+    # @username formatiga keltirish
+    return "@" + s.lstrip("@")
 
 # --- Subscription check ---
 async def is_subscribed_all_diagnostic(user_id: int):
     channels = get_channels()
     if not channels:
-        return True, {"not_subscribed": [], "inaccessible": []}
+        return True, {"not_subscribed": [], "inaccessible": [], "invite_only": []}
 
     not_subscribed = []
     inaccessible = []
+    invite_only = []
+
     for ch in channels:
-        name = ch.lstrip("@").strip()
-        if not name:
-            inaccessible.append((ch, "Empty channel name"))
+        ch_str = ch.strip()
+        # Agar invite-link bo'lsa: tekshiruvdan ozod (pending holatni Telegram API bermaydi)
+        if is_invite_link(ch_str):
+            invite_only.append(ch_str)
             continue
+
+        # Aks holda @username bo'lishi kerak
+        name = ch_str.lstrip("@").strip()
+        if not name:
+            inaccessible.append((ch_str, "Bo'sh kanal nomi"))
+            continue
+
         chat_id = f"@{name}"
         try:
             member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
             if member.status not in ("member", "administrator", "creator"):
-                not_subscribed.append(ch)
+                not_subscribed.append(ch_str)
         except Exception as e:
-            inaccessible.append((ch, str(e)))
+            # Agar kanal private bo'lib username yo'q bo'lsa, admin panelda invite-linkdan foydalaning
+            inaccessible.append((ch_str, str(e)))
+
     ok = (len(not_subscribed) == 0 and len(inaccessible) == 0)
-    return ok, {"not_subscribed": not_subscribed, "inaccessible": inaccessible}
+    # invite_only kanallar “OK” hisoblanadi (pending bo’lsa ham), shuning uchun ok hisobiga ta’sir qilmaydi
+    return ok, {"not_subscribed": not_subscribed, "inaccessible": inaccessible, "invite_only": invite_only}
 
 async def is_subscribed_all(user_id: int) -> bool:
     ok, _ = await is_subscribed_all_diagnostic(user_id)
@@ -154,7 +182,8 @@ MAIN_BUTTONS_ADMIN = [
     [KeyboardButton(text="📚 Barcha kinolar")],
     [KeyboardButton(text="⚙️ Kanallarni boshqarish")],
     [KeyboardButton(text="🛠 Repair")],
-    [KeyboardButton(text="🔁 Migratsiya")]
+    [KeyboardButton(text="🔁 Migratsiya")],
+    [KeyboardButton(text="🗑 Kino o'chirish")]
 ]
 
 def main_menu(is_admin: bool = False) -> ReplyKeyboardMarkup:
@@ -176,11 +205,15 @@ def parts_menu(parts_count: int) -> ReplyKeyboardMarkup:
     rows.append([KeyboardButton(text="🔙 Asosiy menyu")])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
-def channels_panel_markup(channels: list):
+def channels_panel_markup(channels: list[str]):
     buttons = []
     for idx, ch in enumerate(channels, start=1):
-        url = f"https://t.me/{ch.lstrip('@')}"
-        buttons.append([InlineKeyboardButton(text=f"{idx}-kanal ↗", url=url)])
+        label = f"{idx}-kanal ↗"
+        if is_invite_link(ch):
+            url = ch  # to'g'ridan-to'g'ri invite-link
+        else:
+            url = f"https://t.me/{ch.lstrip('@')}"
+        buttons.append([InlineKeyboardButton(text=label, url=url)])
     buttons.append([InlineKeyboardButton(text="✅ Tasdiqlash", callback_data="check_sub")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -190,7 +223,8 @@ async def send_subscription_panel(to):
         return
     text = (
         "❗ Botdan foydalanish uchun pastdagi kanallarga obuna bo'ling.\n"
-        "Keyin ✅ Tasdiqlash tugmasini bosing."
+        "Keyin ✅ Tasdiqlash tugmasini bosing.\n\n"
+        "Agar havola t.me/+... bo'lsa, qo'shilish so'rovi yuboriladi va tasdiqlangach a'zo bo'lasiz."
     )
     kb = channels_panel_markup(channels)
     if isinstance(to, Message):
@@ -202,7 +236,7 @@ def is_button_text(text: str) -> bool:
     base = {
         "🎬 Kino topish", "📊 Statistika", "📽 Kino tavsiyasi", "📩 Adminga murojaat",
         "➕ Kino qo'shish", "📚 Barcha kinolar", "⚙️ Kanallarni boshqarish",
-        "🛠 Repair", "🔁 Migratsiya", "🔙 Asosiy menyu"
+        "🛠 Repair", "🔁 Migratsiya", "🔙 Asosiy menyu", "🗑 Kino o'chirish"
     }
     if text in base:
         return True
@@ -236,6 +270,11 @@ async def cmd_start(message: Message):
             text += "\nKanal bilan muammo:\n"
             for ch, err in info["inaccessible"]:
                 text += f"{ch} — {err}\n"
+        if info.get("invite_only"):
+            text += (
+                "\nℹ️ Invite-link kanallar (t.me/+...) qo'shilish so'rovi asosida ishlaydi. "
+                "Tasdiqlash tugmasini bosing va kuting, tasdiqlangach a'zo bo'lasiz.\n"
+            )
         await message.answer(text)
         await send_subscription_panel(message)
         return
@@ -285,20 +324,28 @@ async def btn_recommend(message: Message):
     if multi and (not single or random.random() < 0.7):
         code, info = random.choice(multi)
         part = random.choice(info["parts"])
-        increment_view(code)
-        try:
-            await message.answer_video(part.get("video", ""), caption=f"🎬 {part.get('title','')}\n\n📝 {part.get('description','')}\n\n💡 Tavsiya qilindi")
-        except TelegramBadRequest as e:
-            await message.answer("❌ Tavsiya qilingan qism uchun video yuborib bo'lmadi.")
-            await message.answer(f"Adminga: /repair {code} yozing va yangi videoni yuboring.\nXato: {e}")
+        video_id = part.get("video")
+        if not video_id:
+            await message.answer("❌ Tavsiya qilingan qism uchun video topilmadi.")
+        else:
+            increment_view(code)
+            try:
+                await message.answer_video(video_id, caption=f"🎬 {part.get('title','')}\n\n📝 {part.get('description','')}\n\n💡 Tavsiya qilindi")
+            except TelegramBadRequest as e:
+                await message.answer("❌ Tavsiya qilingan qism uchun video yuborib bo'lmadi.")
+                await message.answer(f"Adminga: /repair {code} yozing va yangi videoni yuboring.\nXato: {e}")
     elif single:
         code, info = random.choice(single)
-        increment_view(code)
-        try:
-            await message.answer_video(info.get("video", ""), caption=f"🎬 {info.get('title', code)}\n\n📝 {info.get('description','')}\n\n💡 Tavsiya qilindi")
-        except TelegramBadRequest as e:
-            await message.answer("❌ Tavsiya qilingan video yuborib bo'lmadi.")
-            await message.answer(f"Adminga: /repair {code} yozing va yangi videoni yuboring.\nXato: {e}")
+        video_id = info.get("video", "")
+        if not video_id:
+            await message.answer("❌ Tavsiya qilingan video topilmadi.")
+        else:
+            increment_view(code)
+            try:
+                await message.answer_video(video_id, caption=f"🎬 {info.get('title', code)}\n\n📝 {info.get('description','')}\n\n💡 Tavsiya qilindi")
+            except TelegramBadRequest as e:
+                await message.answer("❌ Tavsiya qilingan video yuborib bo'lmadi.")
+                await message.answer(f"Adminga: /repair {code} yozing va yangi videoni yuboring.\nXato: {e}")
     else:
         await message.answer("Hali kinolar qo'shilmagan.")
 
@@ -365,7 +412,8 @@ async def edit_channels_start(message: Message):
     current = get_channels()
     existing = "\n".join(f"{i+1}-kanal: {ch}" for i, ch in enumerate(current, start=1)) if current else "— Mavjud emas —"
     await message.answer(
-        "Kanallar ro'yxatini yuboring (har birini alohida qatorda).\nQabul qilinadi: @kanal yoki https://t.me/kanal\n\n"
+        "Kanallar ro'yxatini yuboring (har birini alohida qatorda).\n"
+        "Qabul qilinadi: @kanal yoki https://t.me/kanal yoki https://t.me/+invite_link\n\n"
         f"Hozirgi ro'yxat:\n{existing}"
     )
     user_waiting_code[message.from_user.id] = False
@@ -378,10 +426,14 @@ async def edit_channels_apply(message: Message):
     channels = []
     for ln in lines:
         if ln.startswith("http://") or ln.startswith("https://"):
-            ln = ln.rstrip("/").split("/")[-1]
-        ln = ln.lstrip("@").strip()
-        if ln:
-            channels.append("@" + ln)
+            ln = ln.rstrip("/")
+            # t.me/username yoki t.me/+invitecode ni to'g'ridan-to'g'ri saqlaymiz
+            # (username bo'lsa keyinchalik tekshiriladi, invite-link bo'lsa tekshiruvdan ozod)
+            channels.append(ln)
+        else:
+            ln = ln.lstrip("@").strip()
+            if ln:
+                channels.append("@" + ln)
     save_channels_list(channels)
     user_current_code.pop(message.from_user.id, None)
     kb = channels_panel_markup(channels)
@@ -390,6 +442,7 @@ async def edit_channels_apply(message: Message):
 @dp.callback_query(lambda c: c.data == "check_sub")
 async def check_subscription(callback: CallbackQuery):
     ok, info = await is_subscribed_all_diagnostic(callback.from_user.id)
+    # Invite-link kanallar tekshiruvdan ozod, shuning uchun ok faqat username kanallarga bog'liq
     if ok:
         await callback.message.answer("✅ Obuna tasdiqlandi. /start ni bosing.")
         await cmd_start(callback.message)
@@ -403,6 +456,11 @@ async def check_subscription(callback: CallbackQuery):
             text += "\nKanal bilan muammo:\n"
             for ch, err in info["inaccessible"]:
                 text += f"{ch} — {err}\n"
+        if info.get("invite_only"):
+            text += (
+                "\nℹ️ Invite-link (t.me/+...) kanallarga qo'shilish so'rovi yuboriladi. "
+                "Tasdiqlashni kuting, keyin /start bosing.\n"
+            )
         await callback.message.answer(text)
         await send_subscription_panel(callback)
 
@@ -485,11 +543,57 @@ async def cmd_migrate(message: Message):
     else:
         await message.answer("ℹ️ Migratsiya kerak emas: legacy yozuv topilmadi.")
 
+# --- O'chirish tugmasi va buyrug'i ---
+@dp.message(lambda m: m.text == "🗑 Kino o'chirish" and m.from_user.id == ADMIN_ID)
+async def btn_delete_movie(message: Message):
+    await message.answer(
+        "🗑 O'chirish rejimi.\n\n"
+        "Format:\n"
+        "- Butun kino: /delete <KOD>\n"
+        "- Faqat qism: /delete <KOD> <QISM_RAQAMI>\n\n"
+        "Masalan:\n/delete A123\n/delete A123 2"
+    )
+
+@dp.message(Command("delete"))
+async def cmd_delete(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("❌ Format noto'g'ri. Foydalanish: /delete <KOD> yoki /delete <KOD> <QISM_RAQAMI>")
+        return
+
+    code = parts[1].strip()
+    qism_index: Optional[int] = None
+    if len(parts) >= 3 and parts[2].isdigit():
+        qism_index = int(parts[2]) - 1
+
+    movies = load_movies()
+    if code not in movies:
+        await message.answer("❌ Bunday kod topilmadi.")
+        return
+
+    if qism_index is None:
+        movies.pop(code)
+        save_movies(movies)
+        await message.answer(f"✅ Kod {code} uchun butun kino o‘chirildi.")
+    else:
+        parts_list = movies[code].get("parts", [])
+        if 0 <= qism_index < len(parts_list):
+            deleted_part = parts_list.pop(qism_index)
+            save_movies(movies)
+            await message.answer(f"✅ Kod {code} uchun {qism_index+1}-qism o‘chirildi.\n🎬 {deleted_part.get('title','')}")
+        else:
+            await message.answer("❌ Bunday qism topilmadi.")
+
+# --- Matn oqimi: tuzatilgan handle_text_flow ---
 @dp.message(lambda m: m.text and not is_button_text(m.text))
 async def handle_text_flow(message: Message):
     text = message.text.strip()
     user_id = message.from_user.id
 
+    # Qism tanlash rejimi
     if user_waiting_part.get(user_id):
         if text.endswith("-qism") and text[:-5].isdigit():
             idx = int(text[:-5]) - 1
@@ -513,15 +617,20 @@ async def handle_text_flow(message: Message):
             return
 
         part = parts[idx]
+        video_id = part.get("video")
+        if not video_id:
+            await message.answer("❌ Ushbu qism uchun video topilmadi.")
+            return
+
         increment_view(code)
         try:
             await message.answer_video(
-                video=part.get("video", ""),
+                video=video_id,
                 caption=f"🎬 {part.get('title','')}\n\n📝 {part.get('description','')}"
             )
         except TelegramBadRequest as e:
             await message.answer("❌ Ushbu qism uchun video yuborib bo'lmadi.")
-            await message.answer(f"Adminga: /repair {code} yozing va yangi videoni yuboring.\nXato: {e}")
+            await message.answer(f"Adminga: /repair {code} {idx+1} yozing va yangi videoni yuboring.\nXato: {e}")
 
         user_waiting_part.pop(user_id, None)
         user_current_code.pop(user_id, None)
@@ -529,6 +638,7 @@ async def handle_text_flow(message: Message):
         await message.answer("Yana nima qilamiz?", reply_markup=kb)
         return
 
+    # Kod kiritish rejimi
     if user_waiting_code.get(user_id):
         ok, _ = await is_subscribed_all_diagnostic(user_id)
         if not ok:
@@ -547,10 +657,14 @@ async def handle_text_flow(message: Message):
         if parts:
             if len(parts) == 1:
                 part = parts[0]
+                video_id = part.get("video")
+                if not video_id:
+                    await message.answer("❌ Ushbu qism uchun video topilmadi.")
+                    return
                 increment_view(code)
                 try:
                     await message.answer_video(
-                        video=part.get("video", ""),
+                        video=video_id,
                         caption=f"🎬 {part.get('title','')}\n\n📝 {part.get('description','')}"
                     )
                 except TelegramBadRequest as e:
@@ -608,7 +722,6 @@ async def on_shutdown(app: web.Application):
     """Shutdown"""
     await bot.session.close()
     print("🛑 Bot sessiyasi yopildi")
-
 
 # --- Main function ---
 def main():
