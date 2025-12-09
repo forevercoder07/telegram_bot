@@ -17,7 +17,11 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler
 # --- Konfiguratsiya ---
 BOT_TOKEN = os.getenv("BOT_TOKEN", "PUT_YOUR_TOKEN_HERE")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "1629210003"))
+<<<<<<< HEAD
 WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "https://kino-bot-t7m8.onrender.com")
+=======
+WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "https://your-domain.com")
+>>>>>>> c26fd8b940197d93d2671e7562c058a6a53122b2
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 WEB_SERVER_HOST = "0.0.0.0"
@@ -27,10 +31,16 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # --- DB (SQLite) ---
+<<<<<<< HEAD
 DB_FILE = os.getenv("DB_FILE", "movies.db")
 
 def get_conn():
     # Render/VPS uchun barqaror: check_same_thread=False
+=======
+DB_FILE = "movies.db"
+
+def get_conn():
+>>>>>>> c26fd8b940197d93d2671e7562c058a6a53122b2
     return sqlite3.connect(DB_FILE, check_same_thread=False)
 
 def init_db():
@@ -84,7 +94,11 @@ def del_setting(key: str):
     conn.commit()
     conn.close()
 
+<<<<<<< HEAD
 # channels list
+=======
+# channels
+>>>>>>> c26fd8b940197d93d2671e7562c058a6a53122b2
 def get_channels() -> list[str]:
     v = get_setting("channels")
     if not v:
@@ -124,6 +138,7 @@ def set_migrated():
 # --- Kino CRUD funksiyalari (log bilan) ---
 def add_movie_part(code: str, title: str, description: str, video: str):
     print(f"[DB_ADD_PART] code={code} title={title} video_present={bool(video)}")
+<<<<<<< HEAD
     if not video:
         # Videoni bo'lsiz saqlashni rad etamiz: barqarorlik uchun
         print(f"[DB_ADD_PART_ERROR] code={code} no_video_provided")
@@ -146,6 +161,19 @@ def add_movie_part(code: str, title: str, description: str, video: str):
         cur.execute("SELECT id, movie_code, title, description, video FROM parts WHERE movie_code=? ORDER BY id", (code,))
         rows = cur.fetchall()
         print(f"[DB_ADD_PART_AFTER] code={code} parts_count={len(rows)} last_part={rows[-1] if rows else None}")
+=======
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("INSERT OR IGNORE INTO movies (code, title, views) VALUES (?, ?, 0)", (code, title))
+    cur.execute("UPDATE movies SET title = ? WHERE code = ? AND (title IS NULL OR title = '')", (title, code))
+    # Insert part (no dedupe here; migration and admin flow ensure no duplicates)
+    cur.execute("INSERT INTO parts (movie_code, title, description, video) VALUES (?, ?, ?, ?)",
+                (code, title, description, video))
+    conn.commit()
+    cur.execute("SELECT id, movie_code, title, description, video FROM parts WHERE movie_code=? ORDER BY id", (code,))
+    rows = cur.fetchall()
+    print(f"[DB_ADD_PART_AFTER] code={code} parts_count={len(rows)} last_part={rows[-1] if rows else None}")
+>>>>>>> c26fd8b940197d93d2671e7562c058a6a53122b2
     conn.close()
 
 def get_all_movies() -> dict:
@@ -214,10 +242,16 @@ def delete_movie_part(code: str, part_index: int) -> Optional[dict]:
 def update_part_video(code: str, part_index: Optional[int], video_file_id: str) -> bool:
     conn = get_conn()
     cur = conn.cursor()
+<<<<<<< HEAD
     cur.execute("SELECT id FROM parts WHERE movie_code=? ORDER BY id", (code,))
     rows = cur.fetchall()
     if part_index is None:
         # oxirgi yoki bo'sh bo'lsa create
+=======
+    if part_index is None:
+        cur.execute("SELECT id FROM parts WHERE movie_code=? ORDER BY id", (code,))
+        rows = cur.fetchall()
+>>>>>>> c26fd8b940197d93d2671e7562c058a6a53122b2
         if rows:
             last_id = rows[-1][0]
             cur.execute("UPDATE parts SET video=? WHERE id=?", (video_file_id, last_id))
@@ -228,6 +262,11 @@ def update_part_video(code: str, part_index: Optional[int], video_file_id: str) 
                         (code, code, "", video_file_id))
             print(f"[UPDATE_PART_VIDEO] code={code} created_part_with_video")
     else:
+<<<<<<< HEAD
+=======
+        cur.execute("SELECT id FROM parts WHERE movie_code=? ORDER BY id", (code,))
+        rows = cur.fetchall()
+>>>>>>> c26fd8b940197d93d2671e7562c058a6a53122b2
         if 0 <= part_index < len(rows):
             pid = rows[part_index][0]
             cur.execute("UPDATE parts SET video=? WHERE id=?", (video_file_id, pid))
@@ -267,6 +306,10 @@ def migrate_json_to_sqlite(json_path: str = "movies.json"):
                 p_title = part.get("title", title)
                 p_desc = part.get("description", "")
                 p_video = part.get("video", "")
+<<<<<<< HEAD
+=======
+                # dedupe by movie_code + video
+>>>>>>> c26fd8b940197d93d2671e7562c058a6a53122b2
                 if p_video:
                     cur.execute("SELECT 1 FROM parts WHERE movie_code=? AND video=? LIMIT 1", (code, p_video))
                     if cur.fetchone():
@@ -407,7 +450,11 @@ user_waiting_part: dict[int, bool] = {}
 user_current_code: dict[int, str] = {}
 admin_repair_code: dict[int, str] = {}
 
+<<<<<<< HEAD
 # --- Handlers ---
+=======
+# --- Handlers (same logic, but using DB temp video) ---
+>>>>>>> c26fd8b940197d93d2671e7562c058a6a53122b2
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     user_id = message.from_user.id
@@ -517,6 +564,7 @@ async def admin_receive_video(message: Message):
 @dp.message(lambda m: m.text and "|" in m.text and m.from_user.id == ADMIN_ID)
 async def admin_receive_info(message: Message):
     try:
+<<<<<<< HEAD
         parts = message.text.split("|", maxsplit=2)
         if len(parts) < 3:
             await message.answer("❌ Format noto'g'ri. To'g'ri format: Kod | Qism nomi | Sharh")
@@ -528,6 +576,15 @@ async def admin_receive_info(message: Message):
             await message.answer("❗ Avval video yuboring yoki /cancel bilan qayta urinib ko'ring.")
             print(f"[ADMIN_INFO_ERROR] admin_id={message.from_user.id} no_temp_video_found")
             return
+=======
+        code, part_title, desc = map(str.strip, message.text.split("|", maxsplit=2))
+        video_id = get_temp_video(message.from_user.id)
+        print(f"[ADMIN_INFO] admin_id={message.from_user.id} code={code} part_title={part_title} desc_len={len(desc)} video_id={video_id}")
+        if not video_id:
+            await message.answer("❗ Avval video yuboring yoki /cancel bilan qayta urinib ko'ring.")
+            print(f"[ADMIN_INFO_ERROR] admin_id={message.from_user.id} no_temp_video_found")
+            return
+>>>>>>> c26fd8b940197d93d2671e7562c058a6a53122b2
         add_movie_part(code, part_title, desc, video_id)
         del_temp_video(message.from_user.id)
         print(f"[ADMIN_INFO_SAVED] admin_id={message.from_user.id} code={code} video_saved={video_id}")
@@ -606,7 +663,11 @@ async def check_subscription(callback: CallbackQuery):
         await callback.message.answer(text)
         await send_subscription_panel(callback)
 
+<<<<<<< HEAD
 # --- Repair, migrate, delete handlers ---
+=======
+# --- Repair, migrate, delete handlers (unchanged logic but using DB temp video) ---
+>>>>>>> c26fd8b940197d93d2671e7562c058a6a53122b2
 @dp.message(lambda m: m.text == "🛠 Repair" and m.from_user.id == ADMIN_ID)
 async def btn_repair_help(message: Message):
     await message.answer("Foydalanish: /repair <KOD> yoki /repair <KOD> <QISM_RAQAMI>\nBuyruqdan so'ng yangi videoni yuboring.")
@@ -800,9 +861,12 @@ async def on_shutdown(app: web.Application):
     print("🛑 Bot sessiyasi yopildi")
 
 def main():
+<<<<<<< HEAD
     print("🚀 Bot ishga tushmoqda...")
     print(f"🌐 Server: {WEB_SERVER_HOST}:{WEB_SERVER_PORT}")
     print(f"🔗 Webhook URL: {WEBHOOK_URL}")
+=======
+>>>>>>> c26fd8b940197d93d2671e7562c058a6a53122b2
     app = web.Application()
     webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
     webhook_handler.register(app, path=WEBHOOK_PATH)
