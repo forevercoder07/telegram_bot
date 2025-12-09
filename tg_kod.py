@@ -1,3 +1,4 @@
+# tg_kod.py
 import os
 import json
 import sqlite3
@@ -34,6 +35,7 @@ def get_conn():
 def init_db():
     conn = get_conn()
     cur = conn.cursor()
+    cur.execute("PRAGMA foreign_keys = ON;")
     cur.execute("""
     CREATE TABLE IF NOT EXISTS movies (
         code TEXT PRIMARY KEY,
@@ -47,7 +49,7 @@ def init_db():
         title TEXT,
         description TEXT,
         video TEXT,
-        FOREIGN KEY(movie_code) REFERENCES movies(code)
+        FOREIGN KEY(movie_code) REFERENCES movies(code) ON DELETE CASCADE
     )""")
     cur.execute("""
     CREATE TABLE IF NOT EXISTS settings (
@@ -58,28 +60,65 @@ def init_db():
     conn.close()
     print("[INIT_DB] Database initialized or already exists.")
 
-# --- Settings: channels saqlash uchun oddiy JSON string ---
-def get_channels() -> list[str]:
+# --- Settings helpers (channels, temp video, migrated flag) ---
+def get_setting(key: str) -> Optional[str]:
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT value FROM settings WHERE key='channels'")
+    cur.execute("SELECT value FROM settings WHERE key=?", (key,))
     row = cur.fetchone()
     conn.close()
-    if not row:
+    return row[0] if row else None
+
+def set_setting(key: str, value: str):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
+    conn.commit()
+    conn.close()
+
+def del_setting(key: str):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM settings WHERE key=?", (key,))
+    conn.commit()
+    conn.close()
+
+# channels
+def get_channels() -> list[str]:
+    v = get_setting("channels")
+    if not v:
         return []
     try:
-        return json.loads(row[0])
+        return json.loads(v)
     except Exception:
         return []
 
 def save_channels_list(channels: list[str]):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
-                ("channels", json.dumps(channels, ensure_ascii=False)))
-    conn.commit()
-    conn.close()
+    set_setting("channels", json.dumps(channels, ensure_ascii=False))
     print(f"[SAVE_CHANNELS] channels_saved_count={len(channels)}")
+
+# temp video stored in DB to survive restarts/workers
+def set_temp_video(admin_id: int, file_id: str):
+    key = f"temp_video:{admin_id}"
+    set_setting(key, file_id)
+    print(f"[SET_TEMP_VIDEO] admin_id={admin_id} file_id={file_id}")
+
+def get_temp_video(admin_id: int) -> Optional[str]:
+    key = f"temp_video:{admin_id}"
+    return get_setting(key)
+
+def del_temp_video(admin_id: int):
+    key = f"temp_video:{admin_id}"
+    del_setting(key)
+    print(f"[DEL_TEMP_VIDEO] admin_id={admin_id}")
+
+# migration flag
+def has_migrated() -> bool:
+    return get_setting("migrated") == "1"
+
+def set_migrated():
+    set_setting("migrated", "1")
+    print("[SET_MIGRATED] migration flag set")
 
 # --- Kino CRUD funksiyalari (log bilan) ---
 def add_movie_part(code: str, title: str, description: str, video: str):
@@ -88,6 +127,7 @@ def add_movie_part(code: str, title: str, description: str, video: str):
     cur = conn.cursor()
     cur.execute("INSERT OR IGNORE INTO movies (code, title, views) VALUES (?, ?, 0)", (code, title))
     cur.execute("UPDATE movies SET title = ? WHERE code = ? AND (title IS NULL OR title = '')", (title, code))
+    # Insert part (no dedupe here; migration and admin flow ensure no duplicates)
     cur.execute("INSERT INTO parts (movie_code, title, description, video) VALUES (?, ?, ?, ?)",
                 (code, title, description, video))
     conn.commit()
@@ -189,10 +229,14 @@ def update_part_video(code: str, part_index: Optional[int], video_file_id: str) 
     conn.close()
     return True
 
-# --- JSON -> SQLite migratsiya (bir martalik) ---
+# --- JSON -> SQLite migratsiya (bir martalik, dedupe) ---
 def migrate_json_to_sqlite(json_path: str = "movies.json"):
+    if has_migrated():
+        print("[MIGRATE] already migrated, skipping.")
+        return
     if not os.path.exists(json_path):
         print(f"[MIGRATE] {json_path} not found, skipping migration.")
+        set_migrated()
         return
     with open(json_path, "r", encoding="utf-8") as f:
         try:
@@ -200,21 +244,37 @@ def migrate_json_to_sqlite(json_path: str = "movies.json"):
         except Exception as e:
             print(f"[MIGRATE_ERROR] failed to load json: {e}")
             return
+    conn = get_conn()
+    cur = conn.cursor()
     for code, info in movies.items():
         title = info.get("title", code)
+        views = info.get("views", 0)
+        cur.execute("INSERT OR IGNORE INTO movies (code, title, views) VALUES (?, ?, ?)", (code, title, views))
         parts = info.get("parts", [])
         if parts:
             for part in parts:
                 p_title = part.get("title", title)
                 p_desc = part.get("description", "")
                 p_video = part.get("video", "")
+                # dedupe by movie_code + video
                 if p_video:
-                    add_movie_part(code, p_title, p_desc, p_video)
+                    cur.execute("SELECT 1 FROM parts WHERE movie_code=? AND video=? LIMIT 1", (code, p_video))
+                    if cur.fetchone():
+                        print(f"[MIGRATE_SKIP] code={code} video_exists, skipping")
+                        continue
+                cur.execute("INSERT INTO parts (movie_code, title, description, video) VALUES (?, ?, ?, ?)",
+                            (code, p_title, p_desc, p_video))
         else:
             video = info.get("video", "")
             desc = info.get("description", "")
             if video:
-                add_movie_part(code, title, desc, video)
+                cur.execute("SELECT 1 FROM parts WHERE movie_code=? AND video=? LIMIT 1", (code, video))
+                if not cur.fetchone():
+                    cur.execute("INSERT INTO parts (movie_code, title, description, video) VALUES (?, ?, ?, ?)",
+                                (code, title, desc, video))
+    conn.commit()
+    conn.close()
+    set_migrated()
     print("[MIGRATE] migration finished.")
 
 # --- Invite-link aniqlash va normalizatsiya ---
@@ -257,7 +317,7 @@ async def is_subscribed_all_diagnostic(user_id: int):
     ok = (len(not_subscribed) == 0 and len(inaccessible) == 0)
     return ok, {"not_subscribed": not_subscribed, "inaccessible": inaccessible, "invite_only": invite_only}
 
-# --- Klaviaturalar ---
+# --- Klaviaturalar va util ---
 MAIN_BUTTONS_USER = [
     [KeyboardButton(text="🎬 Kino topish")],
     [KeyboardButton(text="📊 Statistika")],
@@ -331,14 +391,13 @@ def is_button_text(text: str) -> bool:
         return True
     return False
 
-# --- Per-user state ---
+# --- Per-user state (minimal, DB used for temp video) ---
 user_waiting_code: dict[int, bool] = {}
 user_waiting_part: dict[int, bool] = {}
 user_current_code: dict[int, str] = {}
-admin_temp_video: dict[int, str] = {}
 admin_repair_code: dict[int, str] = {}
 
-# --- Handlers ---
+# --- Handlers (same logic, but using DB temp video) ---
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     user_id = message.from_user.id
@@ -433,29 +492,30 @@ async def btn_back_to_main(message: Message):
     kb = main_menu(is_admin=(user_id == ADMIN_ID))
     await message.answer("Asosiy menyu.", reply_markup=kb)
 
-# --- Admin: qo'shish ---
+# --- Admin: qo'shish (temp video in DB) ---
 @dp.message(lambda m: m.text == "➕ Kino qo'shish" and m.from_user.id == ADMIN_ID)
 async def btn_add_movie(message: Message):
     await message.answer("Videoni yuboring, keyin matn yuboring: Kod | Qism nomi | Sharh")
 
 @dp.message(lambda m: m.video and m.from_user.id == ADMIN_ID)
 async def admin_receive_video(message: Message):
-    admin_temp_video[message.from_user.id] = message.video.file_id
-    print(f"[ADMIN_VIDEO] admin_id={message.from_user.id} file_id={message.video.file_id} file_size={getattr(message.video, 'file_size', None)} mime_type={getattr(message.video, 'mime_type', None)}")
+    file_id = message.video.file_id
+    set_temp_video(message.from_user.id, file_id)
+    print(f"[ADMIN_VIDEO] admin_id={message.from_user.id} file_id={file_id} file_size={getattr(message.video, 'file_size', None)} mime_type={getattr(message.video, 'mime_type', None)}")
     await message.answer("✅ Video qabul qilindi.\nEndi matn yuboring: Kod | Qism nomi | Sharh")
 
 @dp.message(lambda m: m.text and "|" in m.text and m.from_user.id == ADMIN_ID)
 async def admin_receive_info(message: Message):
     try:
         code, part_title, desc = map(str.strip, message.text.split("|", maxsplit=2))
-        video_id = admin_temp_video.get(message.from_user.id)
+        video_id = get_temp_video(message.from_user.id)
         print(f"[ADMIN_INFO] admin_id={message.from_user.id} code={code} part_title={part_title} desc_len={len(desc)} video_id={video_id}")
         if not video_id:
-            await message.answer("❗ Avval video yuboring.")
+            await message.answer("❗ Avval video yuboring yoki /cancel bilan qayta urinib ko'ring.")
             print(f"[ADMIN_INFO_ERROR] admin_id={message.from_user.id} no_temp_video_found")
             return
         add_movie_part(code, part_title, desc, video_id)
-        admin_temp_video.pop(message.from_user.id, None)
+        del_temp_video(message.from_user.id)
         print(f"[ADMIN_INFO_SAVED] admin_id={message.from_user.id} code={code} video_saved={video_id}")
         try:
             await message.answer_video(video=video_id, caption=f"🎬 {part_title}\n\n📝 {desc}")
@@ -532,7 +592,7 @@ async def check_subscription(callback: CallbackQuery):
         await callback.message.answer(text)
         await send_subscription_panel(callback)
 
-# --- Repair (video yangilash) ---
+# --- Repair, migrate, delete handlers (unchanged logic but using DB temp video) ---
 @dp.message(lambda m: m.text == "🛠 Repair" and m.from_user.id == ADMIN_ID)
 async def btn_repair_help(message: Message):
     await message.answer("Foydalanish: /repair <KOD> yoki /repair <KOD> <QISM_RAQAMI>\nBuyruqdan so'ng yangi videoni yuboring.")
@@ -575,7 +635,6 @@ async def admin_receive_repair_video(message: Message):
         return
     await message.answer("✅ Video yangilandi va saqlandi.")
 
-# --- Migratsiya tugmasi va buyruq ---
 @dp.message(lambda m: m.text == "🔁 Migratsiya" and m.from_user.id == ADMIN_ID)
 async def btn_migrate_help(message: Message):
     await cmd_migrate(message)
@@ -587,7 +646,6 @@ async def cmd_migrate(message: Message):
     migrate_json_to_sqlite()
     await message.answer("✅ Migratsiya bajarildi (agar movies.json mavjud bo'lsa).")
 
-# --- O'chirish ---
 @dp.message(lambda m: m.text == "🗑 Kino o'chirish" and m.from_user.id == ADMIN_ID)
 async def btn_delete_movie(message: Message):
     await message.answer(
@@ -714,8 +772,8 @@ async def handle_text_flow(message: Message):
 # --- Webhook lifecycle ---
 async def on_startup(app: web.Application):
     init_db()
-    # agar kerak bo'lsa, bir martalik migratsiyani avtomatik ishga tushirishni yoqish mumkin:
-    # migrate_json_to_sqlite()
+    # run migration once (will skip if already migrated)
+    migrate_json_to_sqlite()
     webhook_info = await bot.get_webhook_info()
     if webhook_info.url != WEBHOOK_URL:
         await bot.set_webhook(url=WEBHOOK_URL)
