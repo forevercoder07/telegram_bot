@@ -1,120 +1,223 @@
-import json
-import random
 import os
+import json
+import sqlite3
+import random
 from typing import Optional
 from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.types import (
-    Message,
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    CallbackQuery,
+    Message, ReplyKeyboardMarkup, KeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 )
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler
 
 # --- Konfiguratsiya ---
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8584498135:AAFTzRZHOnh5ZR_AAyXsSJkX2u8hStXkLmg")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "PUT_YOUR_TOKEN_HERE")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "1629210003"))
-MOVIE_FILE = "movies.json"
-SETTINGS_FILE = "settings.json"
-
-# Webhook sozlamalari
-WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "https://your-domain.com")  # O'zingizning domeningiz
+WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "https://your-domain.com")
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
-
-# Web server sozlamalari
 WEB_SERVER_HOST = "0.0.0.0"
 WEB_SERVER_PORT = int(os.getenv("PORT", "8080"))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# --- Per-user state konteynerlari ---
-user_waiting_code: dict[int, bool] = {}
-user_waiting_part: dict[int, bool] = {}
-user_current_code: dict[int, str] = {}
-admin_temp_video: dict[int, str] = {}
-admin_repair_code: dict[int, str] = {}
+# --- DB (SQLite) ---
+DB_FILE = "movies.db"
 
-# --- Fayl yordamchilari ---
-def load_movies() -> dict:
-    try:
-        with open(MOVIE_FILE, "r", encoding="utf-8") as f:
-            movies = json.load(f)
-    except Exception:
-        movies = {}
+def get_conn():
+    return sqlite3.connect(DB_FILE, check_same_thread=False)
 
-    changed = False
-    for code, info in list(movies.items()):
-        if not isinstance(info, dict):
-            movies[code] = {"title": str(info), "parts": [], "views": 0}
-            changed = True
-            continue
+def init_db():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS movies (
+        code TEXT PRIMARY KEY,
+        title TEXT,
+        views INTEGER DEFAULT 0
+    )""")
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS parts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        movie_code TEXT,
+        title TEXT,
+        description TEXT,
+        video TEXT,
+        FOREIGN KEY(movie_code) REFERENCES movies(code)
+    )""")
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )""")
+    conn.commit()
+    conn.close()
+    print("[INIT_DB] Database initialized or already exists.")
 
-        if "parts" not in info and "video" in info:
-            movies[code] = {
-                "title": info.get("title", code),
-                "parts": [{
-                    "title": info.get("title", code),
-                    "description": info.get("description", ""),
-                    "video": info.get("video", "")
-                }],
-                "views": info.get("views", 0)
-            }
-            changed = True
-            continue
-
-        if "parts" in info:
-            info.setdefault("title", info.get("title", code))
-            info.setdefault("views", info.get("views", 0))
-            new_parts = []
-            for part in info.get("parts", []):
-                if isinstance(part, dict):
-                    part.setdefault("title", info.get("title", code))
-                    part.setdefault("description", "")
-                    part.setdefault("video", "")
-                    new_parts.append(part)
-            info["parts"] = new_parts
-            changed = True
-
-    if changed:
-        try:
-            with open(MOVIE_FILE, "w", encoding="utf-8") as f:
-                json.dump(movies, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
-    return movies
-
-def save_movies(movies: dict):
-    with open(MOVIE_FILE, "w", encoding="utf-8") as f:
-        json.dump(movies, f, ensure_ascii=False, indent=2)
-
-def load_settings() -> dict:
-    try:
-        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {"channels": []}
-
-def save_settings(settings: dict):
-    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(settings, f, ensure_ascii=False, indent=2)
-
+# --- Settings: channels saqlash uchun oddiy JSON string ---
 def get_channels() -> list[str]:
-    # Har bir element: "@username" yoki "https://t.me/+invitecode"
-    return load_settings().get("channels", [])
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM settings WHERE key='channels'")
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return []
+    try:
+        return json.loads(row[0])
+    except Exception:
+        return []
 
 def save_channels_list(channels: list[str]):
-    settings = load_settings()
-    settings["channels"] = channels
-    save_settings(settings)
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                ("channels", json.dumps(channels, ensure_ascii=False)))
+    conn.commit()
+    conn.close()
+    print(f"[SAVE_CHANNELS] channels_saved_count={len(channels)}")
 
-# --- Invite-link aniqlash ---
+# --- Kino CRUD funksiyalari (log bilan) ---
+def add_movie_part(code: str, title: str, description: str, video: str):
+    print(f"[DB_ADD_PART] code={code} title={title} video_present={bool(video)}")
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("INSERT OR IGNORE INTO movies (code, title, views) VALUES (?, ?, 0)", (code, title))
+    cur.execute("UPDATE movies SET title = ? WHERE code = ? AND (title IS NULL OR title = '')", (title, code))
+    cur.execute("INSERT INTO parts (movie_code, title, description, video) VALUES (?, ?, ?, ?)",
+                (code, title, description, video))
+    conn.commit()
+    cur.execute("SELECT id, movie_code, title, description, video FROM parts WHERE movie_code=? ORDER BY id", (code,))
+    rows = cur.fetchall()
+    print(f"[DB_ADD_PART_AFTER] code={code} parts_count={len(rows)} last_part={rows[-1] if rows else None}")
+    conn.close()
+
+def get_all_movies() -> dict:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT code, title, views FROM movies")
+    movies = {}
+    for code, title, views in cur.fetchall():
+        cur.execute("SELECT title, description, video FROM parts WHERE movie_code=? ORDER BY id", (code,))
+        parts = [{"title": p[0], "description": p[1], "video": p[2]} for p in cur.fetchall()]
+        movies[code] = {"title": title, "views": views, "parts": parts}
+    conn.close()
+    print(f"[DB_GET_ALL] total_movies={len(movies)}")
+    return movies
+
+def get_movie(code: str) -> Optional[dict]:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT title, views FROM movies WHERE code=?", (code,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        print(f"[DB_GET_MOVIE] code={code} not_found")
+        return None
+    title, views = row
+    cur.execute("SELECT title, description, video FROM parts WHERE movie_code=? ORDER BY id", (code,))
+    parts_raw = cur.fetchall()
+    parts = [{"title": p[0], "description": p[1], "video": p[2]} for p in parts_raw]
+    conn.close()
+    print(f"[DB_GET_MOVIE] code={code} title={title} views={views} parts_count={len(parts)} parts_videos={[p.get('video') for p in parts]}")
+    return {"title": title, "views": views, "parts": parts}
+
+def increment_view(code: str):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE movies SET views = views + 1 WHERE code=?", (code,))
+    conn.commit()
+    conn.close()
+    print(f"[INCREMENT_VIEW] code={code}")
+
+def delete_movie(code: str):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM parts WHERE movie_code=?", (code,))
+    cur.execute("DELETE FROM movies WHERE code=?", (code,))
+    conn.commit()
+    conn.close()
+    print(f"[DELETE_MOVIE] code={code}")
+
+def delete_movie_part(code: str, part_index: int) -> Optional[dict]:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id, title FROM parts WHERE movie_code=? ORDER BY id", (code,))
+    rows = cur.fetchall()
+    if part_index < 0 or part_index >= len(rows):
+        conn.close()
+        print(f"[DELETE_PART_FAIL] code={code} part_index={part_index} out_of_range")
+        return None
+    part_id, part_title = rows[part_index]
+    cur.execute("DELETE FROM parts WHERE id=?", (part_id,))
+    conn.commit()
+    conn.close()
+    print(f"[DELETE_PART] code={code} part_index={part_index} title={part_title}")
+    return {"title": part_title}
+
+def update_part_video(code: str, part_index: Optional[int], video_file_id: str) -> bool:
+    conn = get_conn()
+    cur = conn.cursor()
+    if part_index is None:
+        cur.execute("SELECT id FROM parts WHERE movie_code=? ORDER BY id", (code,))
+        rows = cur.fetchall()
+        if rows:
+            last_id = rows[-1][0]
+            cur.execute("UPDATE parts SET video=? WHERE id=?", (video_file_id, last_id))
+            print(f"[UPDATE_PART_VIDEO] code={code} updated_last_part_id={last_id}")
+        else:
+            cur.execute("INSERT OR IGNORE INTO movies (code, title, views) VALUES (?, ?, 0)", (code, code))
+            cur.execute("INSERT INTO parts (movie_code, title, description, video) VALUES (?, ?, ?, ?)",
+                        (code, code, "", video_file_id))
+            print(f"[UPDATE_PART_VIDEO] code={code} created_part_with_video")
+    else:
+        cur.execute("SELECT id FROM parts WHERE movie_code=? ORDER BY id", (code,))
+        rows = cur.fetchall()
+        if 0 <= part_index < len(rows):
+            pid = rows[part_index][0]
+            cur.execute("UPDATE parts SET video=? WHERE id=?", (video_file_id, pid))
+            print(f"[UPDATE_PART_VIDEO] code={code} updated_part_index={part_index} id={pid}")
+        else:
+            conn.close()
+            print(f"[UPDATE_PART_VIDEO_FAIL] code={code} part_index={part_index} out_of_range")
+            return False
+    conn.commit()
+    conn.close()
+    return True
+
+# --- JSON -> SQLite migratsiya (bir martalik) ---
+def migrate_json_to_sqlite(json_path: str = "movies.json"):
+    if not os.path.exists(json_path):
+        print(f"[MIGRATE] {json_path} not found, skipping migration.")
+        return
+    with open(json_path, "r", encoding="utf-8") as f:
+        try:
+            movies = json.load(f)
+        except Exception as e:
+            print(f"[MIGRATE_ERROR] failed to load json: {e}")
+            return
+    for code, info in movies.items():
+        title = info.get("title", code)
+        parts = info.get("parts", [])
+        if parts:
+            for part in parts:
+                p_title = part.get("title", title)
+                p_desc = part.get("description", "")
+                p_video = part.get("video", "")
+                if p_video:
+                    add_movie_part(code, p_title, p_desc, p_video)
+        else:
+            video = info.get("video", "")
+            desc = info.get("description", "")
+            if video:
+                add_movie_part(code, title, desc, video)
+    print("[MIGRATE] migration finished.")
+
+# --- Invite-link aniqlash va normalizatsiya ---
 def is_invite_link(s: str) -> bool:
     s = s.strip()
     if s.startswith("http://") or s.startswith("https://"):
@@ -124,59 +227,43 @@ def is_invite_link(s: str) -> bool:
 def normalize_channel_input(s: str) -> str:
     s = s.strip()
     if s.startswith("http://") or s.startswith("https://"):
-        # t.me/username yoki t.me/+invitecode ni saqlab qo'yish
         return s.rstrip("/")
-    # @username formatiga keltirish
     return "@" + s.lstrip("@")
 
-# --- Subscription check ---
+# --- Subscription tekshiruvi (diagnostic) ---
 async def is_subscribed_all_diagnostic(user_id: int):
     channels = get_channels()
     if not channels:
         return True, {"not_subscribed": [], "inaccessible": [], "invite_only": []}
-
     not_subscribed = []
     inaccessible = []
     invite_only = []
-
     for ch in channels:
         ch_str = ch.strip()
-        # Agar invite-link bo'lsa: tekshiruvdan ozod (pending holatni Telegram API bermaydi)
         if is_invite_link(ch_str):
             invite_only.append(ch_str)
             continue
-
-        # Aks holda @username bo'lishi kerak
         name = ch_str.lstrip("@").strip()
         if not name:
             inaccessible.append((ch_str, "Bo'sh kanal nomi"))
             continue
-
         chat_id = f"@{name}"
         try:
             member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
             if member.status not in ("member", "administrator", "creator"):
                 not_subscribed.append(ch_str)
         except Exception as e:
-            # Agar kanal private bo'lib username yo'q bo'lsa, admin panelda invite-linkdan foydalaning
             inaccessible.append((ch_str, str(e)))
-
     ok = (len(not_subscribed) == 0 and len(inaccessible) == 0)
-    # invite_only kanallar “OK” hisoblanadi (pending bo’lsa ham), shuning uchun ok hisobiga ta’sir qilmaydi
     return ok, {"not_subscribed": not_subscribed, "inaccessible": inaccessible, "invite_only": invite_only}
 
-async def is_subscribed_all(user_id: int) -> bool:
-    ok, _ = await is_subscribed_all_diagnostic(user_id)
-    return ok
-
-# --- Keyboards ---
+# --- Klaviaturalar ---
 MAIN_BUTTONS_USER = [
     [KeyboardButton(text="🎬 Kino topish")],
     [KeyboardButton(text="📊 Statistika")],
     [KeyboardButton(text="📽 Kino tavsiyasi")],
     [KeyboardButton(text="📩 Adminga murojaat")]
 ]
-
 MAIN_BUTTONS_ADMIN = [
     [KeyboardButton(text="➕ Kino qo'shish")],
     [KeyboardButton(text="📚 Barcha kinolar")],
@@ -210,7 +297,7 @@ def channels_panel_markup(channels: list[str]):
     for idx, ch in enumerate(channels, start=1):
         label = f"{idx}-kanal ↗"
         if is_invite_link(ch):
-            url = ch  # to'g'ridan-to'g'ri invite-link
+            url = ch
         else:
             url = f"https://t.me/{ch.lstrip('@')}"
         buttons.append([InlineKeyboardButton(text=label, url=url)])
@@ -244,6 +331,13 @@ def is_button_text(text: str) -> bool:
         return True
     return False
 
+# --- Per-user state ---
+user_waiting_code: dict[int, bool] = {}
+user_waiting_part: dict[int, bool] = {}
+user_current_code: dict[int, str] = {}
+admin_temp_video: dict[int, str] = {}
+admin_repair_code: dict[int, str] = {}
+
 # --- Handlers ---
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -251,15 +345,12 @@ async def cmd_start(message: Message):
     user_waiting_code.pop(user_id, None)
     user_waiting_part.pop(user_id, None)
     user_current_code.pop(user_id, None)
-
-    welcome_text = (
-        "👋 Assalomu alaykum!\n\n"
-        "📽 Bu bot orqali siz kinolarni kod orqali topishingiz, qismlarini ko'rishingiz, "
-        "statistikani ko'rishingiz va tavsiyalar olishingiz mumkin.\n\n"
-        "🎬 Kino olamiga xush kelibsiz!"
-    )
     kb = main_menu(is_admin=(user_id == ADMIN_ID))
     ok, info = await is_subscribed_all_diagnostic(user_id)
+    welcome_text = (
+        "👋 Assalomu alaykum!\n\n"
+        "📽 Kino botga xush kelibsiz. Kod orqali kino toping yoki admin bilan bog'laning."
+    )
     if not ok:
         text = "❗ Obuna tekshiruvida muammo:\n"
         if info["not_subscribed"]:
@@ -272,25 +363,19 @@ async def cmd_start(message: Message):
                 text += f"{ch} — {err}\n"
         if info.get("invite_only"):
             text += (
-                "\nℹ️ Invite-link kanallar (t.me/+...) qo'shilish so'rovi asosida ishlaydi. "
-                "Tasdiqlash tugmasini bosing va kuting, tasdiqlangach a'zo bo'lasiz.\n"
+                "\nℹ️ Invite-link kanallar (t.me/+...) qo'shilish so'rovi yuboriladi. "
+                "Tasdiqlash tugmasini bosing va kuting.\n"
             )
         await message.answer(text)
         await send_subscription_panel(message)
         return
-
     await message.answer(welcome_text, reply_markup=kb)
 
 @dp.message(lambda m: m.text == "🎬 Kino topish")
 async def btn_search(message: Message):
-    user_id = message.from_user.id
-    ok, _ = await is_subscribed_all_diagnostic(user_id)
-    if not ok:
-        await send_subscription_panel(message)
-        return
-    user_waiting_code[user_id] = True
-    user_waiting_part.pop(user_id, None)
-    user_current_code.pop(user_id, None)
+    user_waiting_code[message.from_user.id] = True
+    user_waiting_part.pop(message.from_user.id, None)
+    user_current_code.pop(message.from_user.id, None)
     await message.answer("Kino kodini kiriting:")
 
 @dp.message(lambda m: m.text == "📊 Statistika")
@@ -299,7 +384,7 @@ async def btn_stats(message: Message):
     if not ok:
         await send_subscription_panel(message)
         return
-    movies = load_movies()
+    movies = get_all_movies()
     if not movies:
         await message.answer("Hozircha statistikada kino yo'q.")
         return
@@ -315,39 +400,25 @@ async def btn_recommend(message: Message):
     if not ok:
         await send_subscription_panel(message)
         return
-    movies = load_movies()
+    movies = get_all_movies()
     if not movies:
         await message.answer("Hozircha tavsiya uchun kinolar yo'q.")
         return
     multi = [(code, info) for code, info in movies.items() if info.get("parts")]
-    single = [(code, info) for code, info in movies.items() if info.get("parts") == [] and info.get("video")]
-    if multi and (not single or random.random() < 0.7):
-        code, info = random.choice(multi)
-        part = random.choice(info["parts"])
-        video_id = part.get("video")
-        if not video_id:
-            await message.answer("❌ Tavsiya qilingan qism uchun video topilmadi.")
-        else:
-            increment_view(code)
-            try:
-                await message.answer_video(video_id, caption=f"🎬 {part.get('title','')}\n\n📝 {part.get('description','')}\n\n💡 Tavsiya qilindi")
-            except TelegramBadRequest as e:
-                await message.answer("❌ Tavsiya qilingan qism uchun video yuborib bo'lmadi.")
-                await message.answer(f"Adminga: /repair {code} yozing va yangi videoni yuboring.\nXato: {e}")
-    elif single:
-        code, info = random.choice(single)
-        video_id = info.get("video", "")
-        if not video_id:
-            await message.answer("❌ Tavsiya qilingan video topilmadi.")
-        else:
-            increment_view(code)
-            try:
-                await message.answer_video(video_id, caption=f"🎬 {info.get('title', code)}\n\n📝 {info.get('description','')}\n\n💡 Tavsiya qilindi")
-            except TelegramBadRequest as e:
-                await message.answer("❌ Tavsiya qilingan video yuborib bo'lmadi.")
-                await message.answer(f"Adminga: /repair {code} yozing va yangi videoni yuboring.\nXato: {e}")
-    else:
-        await message.answer("Hali kinolar qo'shilmagan.")
+    if not multi:
+        await message.answer("Hozircha tavsiya uchun kinolar yo'q.")
+        return
+    code, info = random.choice(multi)
+    part = random.choice(info["parts"])
+    video_id = part.get("video")
+    if not video_id:
+        await message.answer("❌ Tavsiya qilingan qism uchun video topilmadi.")
+        return
+    increment_view(code)
+    try:
+        await message.answer_video(video=video_id, caption=f"🎬 {part.get('title','')}\n\n📝 {part.get('description','')}\n\n💡 Tavsiya qilindi")
+    except TelegramBadRequest:
+        await message.answer("❌ Tavsiya qilingan qism uchun video yuborib bo'lmadi.")
 
 @dp.message(lambda m: m.text == "📩 Adminga murojaat")
 async def btn_contact(message: Message):
@@ -362,6 +433,7 @@ async def btn_back_to_main(message: Message):
     kb = main_menu(is_admin=(user_id == ADMIN_ID))
     await message.answer("Asosiy menyu.", reply_markup=kb)
 
+# --- Admin: qo'shish ---
 @dp.message(lambda m: m.text == "➕ Kino qo'shish" and m.from_user.id == ADMIN_ID)
 async def btn_add_movie(message: Message):
     await message.answer("Videoni yuboring, keyin matn yuboring: Kod | Qism nomi | Sharh")
@@ -369,6 +441,7 @@ async def btn_add_movie(message: Message):
 @dp.message(lambda m: m.video and m.from_user.id == ADMIN_ID)
 async def admin_receive_video(message: Message):
     admin_temp_video[message.from_user.id] = message.video.file_id
+    print(f"[ADMIN_VIDEO] admin_id={message.from_user.id} file_id={message.video.file_id} file_size={getattr(message.video, 'file_size', None)} mime_type={getattr(message.video, 'mime_type', None)}")
     await message.answer("✅ Video qabul qilindi.\nEndi matn yuboring: Kod | Qism nomi | Sharh")
 
 @dp.message(lambda m: m.text and "|" in m.text and m.from_user.id == ADMIN_ID)
@@ -376,27 +449,27 @@ async def admin_receive_info(message: Message):
     try:
         code, part_title, desc = map(str.strip, message.text.split("|", maxsplit=2))
         video_id = admin_temp_video.get(message.from_user.id)
+        print(f"[ADMIN_INFO] admin_id={message.from_user.id} code={code} part_title={part_title} desc_len={len(desc)} video_id={video_id}")
         if not video_id:
             await message.answer("❗ Avval video yuboring.")
+            print(f"[ADMIN_INFO_ERROR] admin_id={message.from_user.id} no_temp_video_found")
             return
-        movies = load_movies()
-        if code not in movies:
-            movies[code] = {"title": part_title, "parts": [], "views": 0}
-        movies[code].setdefault("parts", [])
-        movies[code]["parts"].append({"title": part_title, "description": desc, "video": video_id})
-        save_movies(movies)
+        add_movie_part(code, part_title, desc, video_id)
         admin_temp_video.pop(message.from_user.id, None)
+        print(f"[ADMIN_INFO_SAVED] admin_id={message.from_user.id} code={code} video_saved={video_id}")
         try:
             await message.answer_video(video=video_id, caption=f"🎬 {part_title}\n\n📝 {desc}")
-        except TelegramBadRequest:
+        except TelegramBadRequest as e:
+            print(f"[ADMIN_PREVIEW_ERROR] admin_id={message.from_user.id} code={code} error={e}")
             await message.answer("✅ Qism qo'shildi, lekin preview yuborilmadi (file_id muammosi).")
         await message.answer("✅ Qism qo'shildi.")
-    except Exception:
+    except Exception as e:
+        print(f"[ADMIN_INFO_EXCEPTION] error={e}")
         await message.answer("❌ Format noto'g'ri. To'g'ri format: Kod | Qism nomi | Sharh")
 
 @dp.message(lambda m: m.text == "📚 Barcha kinolar" and m.from_user.id == ADMIN_ID)
 async def btn_list_movies(message: Message):
-    movies = load_movies()
+    movies = get_all_movies()
     if not movies:
         await message.answer("Hozircha kino yo'q.")
         return
@@ -407,6 +480,7 @@ async def btn_list_movies(message: Message):
     for i in range(0, len(text), 3500):
         await message.answer(text[i:i+3500])
 
+# --- Kanallarni boshqarish ---
 @dp.message(lambda m: m.text == "⚙️ Kanallarni boshqarish" and m.from_user.id == ADMIN_ID)
 async def edit_channels_start(message: Message):
     current = get_channels()
@@ -416,8 +490,6 @@ async def edit_channels_start(message: Message):
         "Qabul qilinadi: @kanal yoki https://t.me/kanal yoki https://t.me/+invite_link\n\n"
         f"Hozirgi ro'yxat:\n{existing}"
     )
-    user_waiting_code[message.from_user.id] = False
-    user_waiting_part[message.from_user.id] = False
     user_current_code[message.from_user.id] = "__editing_channels__"
 
 @dp.message(lambda m: m.from_user.id == ADMIN_ID and m.text and m.text.strip() and user_current_code.get(m.from_user.id) == "__editing_channels__")
@@ -426,10 +498,7 @@ async def edit_channels_apply(message: Message):
     channels = []
     for ln in lines:
         if ln.startswith("http://") or ln.startswith("https://"):
-            ln = ln.rstrip("/")
-            # t.me/username yoki t.me/+invitecode ni to'g'ridan-to'g'ri saqlaymiz
-            # (username bo'lsa keyinchalik tekshiriladi, invite-link bo'lsa tekshiruvdan ozod)
-            channels.append(ln)
+            channels.append(ln.rstrip("/"))
         else:
             ln = ln.lstrip("@").strip()
             if ln:
@@ -442,7 +511,6 @@ async def edit_channels_apply(message: Message):
 @dp.callback_query(lambda c: c.data == "check_sub")
 async def check_subscription(callback: CallbackQuery):
     ok, info = await is_subscribed_all_diagnostic(callback.from_user.id)
-    # Invite-link kanallar tekshiruvdan ozod, shuning uchun ok faqat username kanallarga bog'liq
     if ok:
         await callback.message.answer("✅ Obuna tasdiqlandi. /start ni bosing.")
         await cmd_start(callback.message)
@@ -464,6 +532,7 @@ async def check_subscription(callback: CallbackQuery):
         await callback.message.answer(text)
         await send_subscription_panel(callback)
 
+# --- Repair (video yangilash) ---
 @dp.message(lambda m: m.text == "🛠 Repair" and m.from_user.id == ADMIN_ID)
 async def btn_repair_help(message: Message):
     await message.answer("Foydalanish: /repair <KOD> yoki /repair <KOD> <QISM_RAQAMI>\nBuyruqdan so'ng yangi videoni yuboring.")
@@ -480,8 +549,8 @@ async def cmd_repair(message: Message):
     qism_index: Optional[int] = None
     if len(parts) >= 3 and parts[2].isdigit():
         qism_index = int(parts[2]) - 1
-    movies = load_movies()
-    if code not in movies:
+    movie = get_movie(code)
+    if not movie:
         await message.answer("Bunday kod topilmadi.")
         return
     admin_repair_code[message.from_user.id] = json.dumps({"code": code, "part": qism_index})
@@ -496,25 +565,17 @@ async def admin_receive_repair_video(message: Message):
     data = json.loads(raw)
     code = data.get("code")
     part_idx = data.get("part")
-    movies = load_movies()
-    if code not in movies:
+    movie = get_movie(code)
+    if not movie:
         await message.answer("Kod topilmadi, bekor qilindi.")
         return
-    if part_idx is None:
-        if movies[code].get("parts"):
-            movies[code]["parts"][-1]["video"] = message.video.file_id
-        else:
-            movies[code]["video"] = message.video.file_id
-    else:
-        parts = movies[code].get("parts", [])
-        if 0 <= part_idx < len(parts):
-            movies[code]["parts"][part_idx]["video"] = message.video.file_id
-        else:
-            await message.answer("❌ Bunday qism topilmadi. Repair bekor qilindi.")
-            return
-    save_movies(movies)
+    ok = update_part_video(code, part_idx, message.video.file_id)
+    if not ok:
+        await message.answer("❌ Qism topilmadi. Repair bekor qilindi.")
+        return
     await message.answer("✅ Video yangilandi va saqlandi.")
 
+# --- Migratsiya tugmasi va buyruq ---
 @dp.message(lambda m: m.text == "🔁 Migratsiya" and m.from_user.id == ADMIN_ID)
 async def btn_migrate_help(message: Message):
     await cmd_migrate(message)
@@ -523,27 +584,10 @@ async def btn_migrate_help(message: Message):
 async def cmd_migrate(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
-    movies = load_movies()
-    changed = False
-    for code, info in list(movies.items()):
-        if "parts" not in info and info.get("video"):
-            movies[code] = {
-                "title": info.get("title", code),
-                "parts": [{
-                    "title": info.get("title", code),
-                    "description": info.get("description", ""),
-                    "video": info.get("video", "")
-                }],
-                "views": info.get("views", 0)
-            }
-            changed = True
-    if changed:
-        save_movies(movies)
-        await message.answer("✅ Migratsiya bajarildi: legacy yozuvlar parts formatiga o'tkazildi.")
-    else:
-        await message.answer("ℹ️ Migratsiya kerak emas: legacy yozuv topilmadi.")
+    migrate_json_to_sqlite()
+    await message.answer("✅ Migratsiya bajarildi (agar movies.json mavjud bo'lsa).")
 
-# --- O'chirish tugmasi va buyrug'i ---
+# --- O'chirish ---
 @dp.message(lambda m: m.text == "🗑 Kino o'chirish" and m.from_user.id == ADMIN_ID)
 async def btn_delete_movie(message: Message):
     await message.answer(
@@ -558,36 +602,29 @@ async def btn_delete_movie(message: Message):
 async def cmd_delete(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
-
     parts = message.text.split()
     if len(parts) < 2:
         await message.answer("❌ Format noto'g'ri. Foydalanish: /delete <KOD> yoki /delete <KOD> <QISM_RAQAMI>")
         return
-
     code = parts[1].strip()
     qism_index: Optional[int] = None
     if len(parts) >= 3 and parts[2].isdigit():
         qism_index = int(parts[2]) - 1
-
-    movies = load_movies()
-    if code not in movies:
+    movie = get_movie(code)
+    if not movie:
         await message.answer("❌ Bunday kod topilmadi.")
         return
-
     if qism_index is None:
-        movies.pop(code)
-        save_movies(movies)
+        delete_movie(code)
         await message.answer(f"✅ Kod {code} uchun butun kino o‘chirildi.")
     else:
-        parts_list = movies[code].get("parts", [])
-        if 0 <= qism_index < len(parts_list):
-            deleted_part = parts_list.pop(qism_index)
-            save_movies(movies)
-            await message.answer(f"✅ Kod {code} uchun {qism_index+1}-qism o‘chirildi.\n🎬 {deleted_part.get('title','')}")
+        res = delete_movie_part(code, qism_index)
+        if res:
+            await message.answer(f"✅ Kod {code} uchun {qism_index+1}-qism o‘chirildi.\n🎬 {res.get('title','')}")
         else:
             await message.answer("❌ Bunday qism topilmadi.")
 
-# --- Matn oqimi: tuzatilgan handle_text_flow ---
+# --- Matn oqimi (qism tanlash va kod qidirish) ---
 @dp.message(lambda m: m.text and not is_button_text(m.text))
 async def handle_text_flow(message: Message):
     text = message.text.strip()
@@ -595,6 +632,7 @@ async def handle_text_flow(message: Message):
 
     # Qism tanlash rejimi
     if user_waiting_part.get(user_id):
+        print(f"[USER_PART_SELECT] user_id={user_id} text={text} waiting_part=True current_code={user_current_code.get(user_id)}")
         if text.endswith("-qism") and text[:-5].isdigit():
             idx = int(text[:-5]) - 1
         elif text.isdigit():
@@ -602,36 +640,29 @@ async def handle_text_flow(message: Message):
         else:
             await message.answer("Qism raqamini tanlang (masalan: 1-qism) yoki 🔙 Asosiy menyuga qayting.")
             return
-
         code = user_current_code.get(user_id)
-        movies = load_movies()
-        if not code or code not in movies:
+        movie = get_movie(code) if code else None
+        if not code or not movie:
             await message.answer("❌ Qism tanlash konteksti yo'qoldi. Iltimos, '🎬 Kino topish'dan qayta urinib ko'ring.")
             user_waiting_part.pop(user_id, None)
             user_current_code.pop(user_id, None)
             return
-
-        parts = movies[code].get("parts", [])
+        parts = movie.get("parts", [])
         if idx < 0 or idx >= len(parts):
             await message.answer("❌ Bunday qism mavjud emas. Tugmalardan tanlang.")
             return
-
         part = parts[idx]
         video_id = part.get("video")
+        print(f"[USER_PART_RESOLVE] user_id={user_id} code={code} idx={idx} part_video={video_id}")
         if not video_id:
             await message.answer("❌ Ushbu qism uchun video topilmadi.")
             return
-
         increment_view(code)
         try:
-            await message.answer_video(
-                video=video_id,
-                caption=f"🎬 {part.get('title','')}\n\n📝 {part.get('description','')}"
-            )
+            await message.answer_video(video=video_id, caption=f"🎬 {part.get('title','')}\n\n📝 {part.get('description','')}")
         except TelegramBadRequest as e:
+            print(f"[USER_PART_SEND_ERROR] user_id={user_id} code={code} idx={idx} error={e}")
             await message.answer("❌ Ushbu qism uchun video yuborib bo'lmadi.")
-            await message.answer(f"Adminga: /repair {code} {idx+1} yozing va yangi videoni yuboring.\nXato: {e}")
-
         user_waiting_part.pop(user_id, None)
         user_current_code.pop(user_id, None)
         kb = main_menu(is_admin=(user_id == ADMIN_ID))
@@ -640,77 +671,51 @@ async def handle_text_flow(message: Message):
 
     # Kod kiritish rejimi
     if user_waiting_code.get(user_id):
+        print(f"[USER_CODE_ENTER] user_id={user_id} code_entered={text}")
         ok, _ = await is_subscribed_all_diagnostic(user_id)
         if not ok:
             await send_subscription_panel(message)
             return
-
         code = text
-        movies = load_movies()
-        if code not in movies:
+        movie = get_movie(code)
+        print(f"[USER_CODE_MOVIE] user_id={user_id} movie_found={bool(movie)}")
+        if not movie:
             await message.answer("📥 Bunday kodli kino topilmadi.")
             return
-
-        m = movies[code]
-        parts = m.get("parts", [])
-
+        parts = movie.get("parts", [])
         if parts:
             if len(parts) == 1:
                 part = parts[0]
                 video_id = part.get("video")
+                print(f"[USER_CODE_SINGLE_PART] user_id={user_id} code={code} video_id={video_id}")
                 if not video_id:
                     await message.answer("❌ Ushbu qism uchun video topilmadi.")
                     return
                 increment_view(code)
                 try:
-                    await message.answer_video(
-                        video=video_id,
-                        caption=f"🎬 {part.get('title','')}\n\n📝 {part.get('description','')}"
-                    )
+                    await message.answer_video(video=video_id, caption=f"🎬 {part.get('title','')}\n\n📝 {part.get('description','')}")
                 except TelegramBadRequest as e:
+                    print(f"[USER_CODE_SEND_ERROR] user_id={user_id} code={code} error={e}")
                     await message.answer("❌ Video yuborib bo'lmadi.")
-                    await message.answer(f"Adminga: /repair {code} yozing va yangi videoni yuboring.\nXato: {e}")
                 user_waiting_code.pop(user_id, None)
                 kb = main_menu(is_admin=(user_id == ADMIN_ID))
                 await message.answer("Yana nima qilamiz?", reply_markup=kb)
                 return
-
             kb = parts_menu(len(parts))
             user_current_code[user_id] = code
             user_waiting_part[user_id] = True
-            await message.answer(f"🎬 {m.get('title', code)} qismlarini tanlang:", reply_markup=kb)
+            await message.answer(f"🎬 {movie.get('title', code)} qismlarini tanlang:", reply_markup=kb)
             return
-
-        video_id = m.get("video") or (parts[0].get("video") if parts else None)
-        if video_id:
-            increment_view(code)
-            try:
-                await message.answer_video(
-                    video=video_id,
-                    caption=f"🎬 {m.get('title', code)}\n\n📝 {m.get('description','')}"
-                )
-            except TelegramBadRequest as e:
-                await message.answer("❌ Video yuborib bo'lmadi.")
-                await message.answer(f"Adminga: /repair {code} yozing va yangi videoni yuboring.\nXato: {e}")
-            user_waiting_code.pop(user_id, None)
-            kb = main_menu(is_admin=(user_id == ADMIN_ID))
-            await message.answer("Yana nima qilamiz?", reply_markup=kb)
-            return
-
         await message.answer("📥 Bu kodda kontent topilmadi.")
         return
 
     await message.answer("Iltimos, menyudan biror tugmani tanlang yoki /start ni bosing.")
 
-def increment_view(code: str):
-    movies = load_movies()
-    if code in movies:
-        movies[code]["views"] = movies[code].get("views", 0) + 1
-        save_movies(movies)
-
 # --- Webhook lifecycle ---
 async def on_startup(app: web.Application):
-    """Webhook o'rnatish"""
+    init_db()
+    # agar kerak bo'lsa, bir martalik migratsiyani avtomatik ishga tushirishni yoqish mumkin:
+    # migrate_json_to_sqlite()
     webhook_info = await bot.get_webhook_info()
     if webhook_info.url != WEBHOOK_URL:
         await bot.set_webhook(url=WEBHOOK_URL)
@@ -719,39 +724,16 @@ async def on_startup(app: web.Application):
         print(f"ℹ️ Webhook allaqachon o'rnatilgan: {WEBHOOK_URL}")
 
 async def on_shutdown(app: web.Application):
-    """Shutdown"""
     await bot.session.close()
     print("🛑 Bot sessiyasi yopildi")
 
-# --- Main function ---
 def main():
-    # aiohttp web application yaratish
     app = web.Application()
-    
-    # Webhook handler setup
-    webhook_handler = SimpleRequestHandler(
-        dispatcher=dp,
-        bot=bot,
-    )
+    webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
     webhook_handler.register(app, path=WEBHOOK_PATH)
-    
-    # Startup va shutdown eventlar
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
-    
-    # Setup application
-    setup_application(app, dp, bot=bot)
-    
-    # Web server ishga tushirish
-    print(f"🚀 Bot ishga tushmoqda...")
-    print(f"🌐 Server: {WEB_SERVER_HOST}:{WEB_SERVER_PORT}")
-    print(f"🔗 Webhook URL: {WEBHOOK_URL}")
-    
-    web.run_app(
-        app,
-        host=WEB_SERVER_HOST,
-        port=WEB_SERVER_PORT
-    )
+    web.run_app(app, host=WEB_SERVER_HOST, port=WEB_SERVER_PORT)
 
 if __name__ == "__main__":
     main()
