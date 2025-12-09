@@ -14,14 +14,10 @@ from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler
 
-# --- Konfiguratsiya ---
+# --- Configuration ---
 BOT_TOKEN = os.getenv("BOT_TOKEN", "PUT_YOUR_TOKEN_HERE")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "1629210003"))
-<<<<<<< HEAD
-WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "https://kino-bot-t7m8.onrender.com")
-=======
-WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "https://your-domain.com")
->>>>>>> c26fd8b940197d93d2671e7562c058a6a53122b2
+WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "https://your-app.onrender.com")
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 WEB_SERVER_HOST = "0.0.0.0"
@@ -30,17 +26,10 @@ WEB_SERVER_PORT = int(os.getenv("PORT", "8080"))
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# --- DB (SQLite) ---
-<<<<<<< HEAD
+# --- Database file path ---
 DB_FILE = os.getenv("DB_FILE", "movies.db")
 
 def get_conn():
-    # Render/VPS uchun barqaror: check_same_thread=False
-=======
-DB_FILE = "movies.db"
-
-def get_conn():
->>>>>>> c26fd8b940197d93d2671e7562c058a6a53122b2
     return sqlite3.connect(DB_FILE, check_same_thread=False)
 
 def init_db():
@@ -71,7 +60,7 @@ def init_db():
     conn.close()
     print("[INIT_DB] Database initialized or already exists.")
 
-# --- Settings helpers (channels, temp video, migrated flag) ---
+# --- Settings helpers ---
 def get_setting(key: str) -> Optional[str]:
     conn = get_conn()
     cur = conn.cursor()
@@ -94,11 +83,6 @@ def del_setting(key: str):
     conn.commit()
     conn.close()
 
-<<<<<<< HEAD
-# channels list
-=======
-# channels
->>>>>>> c26fd8b940197d93d2671e7562c058a6a53122b2
 def get_channels() -> list[str]:
     v = get_setting("channels")
     if not v:
@@ -112,7 +96,6 @@ def save_channels_list(channels: list[str]):
     set_setting("channels", json.dumps(channels, ensure_ascii=False))
     print(f"[SAVE_CHANNELS] channels_saved_count={len(channels)}")
 
-# temp video stored in DB to survive restarts/workers
 def set_temp_video(admin_id: int, file_id: str):
     key = f"temp_video:{admin_id}"
     set_setting(key, file_id)
@@ -127,7 +110,6 @@ def del_temp_video(admin_id: int):
     del_setting(key)
     print(f"[DEL_TEMP_VIDEO] admin_id={admin_id}")
 
-# migration flag
 def has_migrated() -> bool:
     return get_setting("migrated") == "1"
 
@@ -135,20 +117,16 @@ def set_migrated():
     set_setting("migrated", "1")
     print("[SET_MIGRATED] migration flag set")
 
-# --- Kino CRUD funksiyalari (log bilan) ---
+# --- Movie CRUD ---
 def add_movie_part(code: str, title: str, description: str, video: str):
     print(f"[DB_ADD_PART] code={code} title={title} video_present={bool(video)}")
-<<<<<<< HEAD
     if not video:
-        # Videoni bo'lsiz saqlashni rad etamiz: barqarorlik uchun
         print(f"[DB_ADD_PART_ERROR] code={code} no_video_provided")
         return
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("INSERT OR IGNORE INTO movies (code, title, views) VALUES (?, ?, 0)", (code, title))
-    # Update title agar bo'sh bo'lsa
     cur.execute("UPDATE movies SET title = ? WHERE code = ? AND (title IS NULL OR title = '')", (title, code))
-    # Duplicate oldini olish: movie_code+video bo'yicha tekshirish
     cur.execute("SELECT 1 FROM parts WHERE movie_code=? AND video=? LIMIT 1", (code, video))
     if cur.fetchone():
         print(f"[DB_ADD_PART_SKIP] code={code} duplicate_video")
@@ -161,19 +139,6 @@ def add_movie_part(code: str, title: str, description: str, video: str):
         cur.execute("SELECT id, movie_code, title, description, video FROM parts WHERE movie_code=? ORDER BY id", (code,))
         rows = cur.fetchall()
         print(f"[DB_ADD_PART_AFTER] code={code} parts_count={len(rows)} last_part={rows[-1] if rows else None}")
-=======
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("INSERT OR IGNORE INTO movies (code, title, views) VALUES (?, ?, 0)", (code, title))
-    cur.execute("UPDATE movies SET title = ? WHERE code = ? AND (title IS NULL OR title = '')", (title, code))
-    # Insert part (no dedupe here; migration and admin flow ensure no duplicates)
-    cur.execute("INSERT INTO parts (movie_code, title, description, video) VALUES (?, ?, ?, ?)",
-                (code, title, description, video))
-    conn.commit()
-    cur.execute("SELECT id, movie_code, title, description, video FROM parts WHERE movie_code=? ORDER BY id", (code,))
-    rows = cur.fetchall()
-    print(f"[DB_ADD_PART_AFTER] code={code} parts_count={len(rows)} last_part={rows[-1] if rows else None}")
->>>>>>> c26fd8b940197d93d2671e7562c058a6a53122b2
     conn.close()
 
 def get_all_movies() -> dict:
@@ -242,16 +207,9 @@ def delete_movie_part(code: str, part_index: int) -> Optional[dict]:
 def update_part_video(code: str, part_index: Optional[int], video_file_id: str) -> bool:
     conn = get_conn()
     cur = conn.cursor()
-<<<<<<< HEAD
     cur.execute("SELECT id FROM parts WHERE movie_code=? ORDER BY id", (code,))
     rows = cur.fetchall()
     if part_index is None:
-        # oxirgi yoki bo'sh bo'lsa create
-=======
-    if part_index is None:
-        cur.execute("SELECT id FROM parts WHERE movie_code=? ORDER BY id", (code,))
-        rows = cur.fetchall()
->>>>>>> c26fd8b940197d93d2671e7562c058a6a53122b2
         if rows:
             last_id = rows[-1][0]
             cur.execute("UPDATE parts SET video=? WHERE id=?", (video_file_id, last_id))
@@ -262,11 +220,6 @@ def update_part_video(code: str, part_index: Optional[int], video_file_id: str) 
                         (code, code, "", video_file_id))
             print(f"[UPDATE_PART_VIDEO] code={code} created_part_with_video")
     else:
-<<<<<<< HEAD
-=======
-        cur.execute("SELECT id FROM parts WHERE movie_code=? ORDER BY id", (code,))
-        rows = cur.fetchall()
->>>>>>> c26fd8b940197d93d2671e7562c058a6a53122b2
         if 0 <= part_index < len(rows):
             pid = rows[part_index][0]
             cur.execute("UPDATE parts SET video=? WHERE id=?", (video_file_id, pid))
@@ -279,7 +232,7 @@ def update_part_video(code: str, part_index: Optional[int], video_file_id: str) 
     conn.close()
     return True
 
-# --- JSON -> SQLite migratsiya (bir martalik, dedupe) ---
+# --- JSON migration ---
 def migrate_json_to_sqlite(json_path: str = "movies.json"):
     if has_migrated():
         print("[MIGRATE] already migrated, skipping.")
@@ -306,10 +259,6 @@ def migrate_json_to_sqlite(json_path: str = "movies.json"):
                 p_title = part.get("title", title)
                 p_desc = part.get("description", "")
                 p_video = part.get("video", "")
-<<<<<<< HEAD
-=======
-                # dedupe by movie_code + video
->>>>>>> c26fd8b940197d93d2671e7562c058a6a53122b2
                 if p_video:
                     cur.execute("SELECT 1 FROM parts WHERE movie_code=? AND video=? LIMIT 1", (code, p_video))
                     if cur.fetchone():
@@ -330,7 +279,7 @@ def migrate_json_to_sqlite(json_path: str = "movies.json"):
     set_migrated()
     print("[MIGRATE] migration finished.")
 
-# --- Invite-link aniqlash va normalizatsiya ---
+# --- Utilities ---
 def is_invite_link(s: str) -> bool:
     s = s.strip()
     if s.startswith("http://") or s.startswith("https://"):
@@ -343,7 +292,6 @@ def normalize_channel_input(s: str) -> str:
         return s.rstrip("/")
     return "@" + s.lstrip("@")
 
-# --- Subscription tekshiruvi (diagnostic) ---
 async def is_subscribed_all_diagnostic(user_id: int):
     channels = get_channels()
     if not channels:
@@ -358,7 +306,7 @@ async def is_subscribed_all_diagnostic(user_id: int):
             continue
         name = ch_str.lstrip("@").strip()
         if not name:
-            inaccessible.append((ch_str, "Bo'sh kanal nomi"))
+            inaccessible.append((ch_str, "Empty channel name"))
             continue
         chat_id = f"@{name}"
         try:
@@ -370,7 +318,7 @@ async def is_subscribed_all_diagnostic(user_id: int):
     ok = (len(not_subscribed) == 0 and len(inaccessible) == 0)
     return ok, {"not_subscribed": not_subscribed, "inaccessible": inaccessible, "invite_only": invite_only}
 
-# --- Klaviaturalar va util ---
+# --- Keyboards ---
 MAIN_BUTTONS_USER = [
     [KeyboardButton(text="🎬 Kino topish")],
     [KeyboardButton(text="📊 Statistika")],
@@ -444,17 +392,13 @@ def is_button_text(text: str) -> bool:
         return True
     return False
 
-# --- Per-user state (minimal, DB used for temp video) ---
+# --- Per-user state ---
 user_waiting_code: dict[int, bool] = {}
 user_waiting_part: dict[int, bool] = {}
 user_current_code: dict[int, str] = {}
 admin_repair_code: dict[int, str] = {}
 
-<<<<<<< HEAD
 # --- Handlers ---
-=======
-# --- Handlers (same logic, but using DB temp video) ---
->>>>>>> c26fd8b940197d93d2671e7562c058a6a53122b2
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     user_id = message.from_user.id
@@ -549,7 +493,7 @@ async def btn_back_to_main(message: Message):
     kb = main_menu(is_admin=(user_id == ADMIN_ID))
     await message.answer("Asosiy menyu.", reply_markup=kb)
 
-# --- Admin: qo'shish (temp video in DB) ---
+# --- Admin flows ---
 @dp.message(lambda m: m.text == "➕ Kino qo'shish" and m.from_user.id == ADMIN_ID)
 async def btn_add_movie(message: Message):
     await message.answer("Videoni yuboring, keyin matn yuboring: Kod | Qism nomi | Sharh")
@@ -564,7 +508,6 @@ async def admin_receive_video(message: Message):
 @dp.message(lambda m: m.text and "|" in m.text and m.from_user.id == ADMIN_ID)
 async def admin_receive_info(message: Message):
     try:
-<<<<<<< HEAD
         parts = message.text.split("|", maxsplit=2)
         if len(parts) < 3:
             await message.answer("❌ Format noto'g'ri. To'g'ri format: Kod | Qism nomi | Sharh")
@@ -576,15 +519,6 @@ async def admin_receive_info(message: Message):
             await message.answer("❗ Avval video yuboring yoki /cancel bilan qayta urinib ko'ring.")
             print(f"[ADMIN_INFO_ERROR] admin_id={message.from_user.id} no_temp_video_found")
             return
-=======
-        code, part_title, desc = map(str.strip, message.text.split("|", maxsplit=2))
-        video_id = get_temp_video(message.from_user.id)
-        print(f"[ADMIN_INFO] admin_id={message.from_user.id} code={code} part_title={part_title} desc_len={len(desc)} video_id={video_id}")
-        if not video_id:
-            await message.answer("❗ Avval video yuboring yoki /cancel bilan qayta urinib ko'ring.")
-            print(f"[ADMIN_INFO_ERROR] admin_id={message.from_user.id} no_temp_video_found")
-            return
->>>>>>> c26fd8b940197d93d2671e7562c058a6a53122b2
         add_movie_part(code, part_title, desc, video_id)
         del_temp_video(message.from_user.id)
         print(f"[ADMIN_INFO_SAVED] admin_id={message.from_user.id} code={code} video_saved={video_id}")
@@ -611,7 +545,6 @@ async def btn_list_movies(message: Message):
     for i in range(0, len(text), 3500):
         await message.answer(text[i:i+3500])
 
-# --- Kanallarni boshqarish ---
 @dp.message(lambda m: m.text == "⚙️ Kanallarni boshqarish" and m.from_user.id == ADMIN_ID)
 async def edit_channels_start(message: Message):
     current = get_channels()
@@ -663,11 +596,6 @@ async def check_subscription(callback: CallbackQuery):
         await callback.message.answer(text)
         await send_subscription_panel(callback)
 
-<<<<<<< HEAD
-# --- Repair, migrate, delete handlers ---
-=======
-# --- Repair, migrate, delete handlers (unchanged logic but using DB temp video) ---
->>>>>>> c26fd8b940197d93d2671e7562c058a6a53122b2
 @dp.message(lambda m: m.text == "🛠 Repair" and m.from_user.id == ADMIN_ID)
 async def btn_repair_help(message: Message):
     await message.answer("Foydalanish: /repair <KOD> yoki /repair <KOD> <QISM_RAQAMI>\nBuyruqdan so'ng yangi videoni yuboring.")
@@ -757,13 +685,12 @@ async def cmd_delete(message: Message):
         else:
             await message.answer("❌ Bunday qism topilmadi.")
 
-# --- Matn oqimi (qism tanlash va kod qidirish) ---
+# --- Text flow handler ---
 @dp.message(lambda m: m.text and not is_button_text(m.text))
 async def handle_text_flow(message: Message):
     text = message.text.strip()
     user_id = message.from_user.id
 
-    # Qism tanlash rejimi
     if user_waiting_part.get(user_id):
         print(f"[USER_PART_SELECT] user_id={user_id} text={text} waiting_part=True current_code={user_current_code.get(user_id)}")
         if text.endswith("-qism") and text[:-5].isdigit():
@@ -802,7 +729,6 @@ async def handle_text_flow(message: Message):
         await message.answer("Yana nima qilamiz?", reply_markup=kb)
         return
 
-    # Kod kiritish rejimi
     if user_waiting_code.get(user_id):
         print(f"[USER_CODE_ENTER] user_id={user_id} code_entered={text}")
         ok, _ = await is_subscribed_all_diagnostic(user_id)
@@ -847,26 +773,22 @@ async def handle_text_flow(message: Message):
 # --- Webhook lifecycle ---
 async def on_startup(app: web.Application):
     init_db()
-    # run migration once (will skip if already migrated)
     migrate_json_to_sqlite()
     webhook_info = await bot.get_webhook_info()
     if webhook_info.url != WEBHOOK_URL:
         await bot.set_webhook(url=WEBHOOK_URL)
-        print(f"✅ Webhook o'rnatildi: {WEBHOOK_URL}")
+        print(f"✅ Webhook set: {WEBHOOK_URL}")
     else:
-        print(f"ℹ️ Webhook allaqachon o'rnatilgan: {WEBHOOK_URL}")
+        print(f"ℹ️ Webhook already set: {WEBHOOK_URL}")
 
 async def on_shutdown(app: web.Application):
     await bot.session.close()
-    print("🛑 Bot sessiyasi yopildi")
+    print("🛑 Bot session closed")
 
 def main():
-<<<<<<< HEAD
-    print("🚀 Bot ishga tushmoqda...")
+    print("🚀 Bot starting...")
     print(f"🌐 Server: {WEB_SERVER_HOST}:{WEB_SERVER_PORT}")
     print(f"🔗 Webhook URL: {WEBHOOK_URL}")
-=======
->>>>>>> c26fd8b940197d93d2671e7562c058a6a53122b2
     app = web.Application()
     webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
     webhook_handler.register(app, path=WEBHOOK_PATH)
