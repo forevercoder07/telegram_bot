@@ -61,8 +61,8 @@ ADMIN_MENU = ReplyKeyboardMarkup(
 )
 
 # ================= STATES =================
-wait_code = {}
-current_code = {}
+wait_code: dict[int, bool] = {}
+current_code: dict[int, str] = {}
 
 # ================= USER SAVE =================
 def save_user(user):
@@ -157,7 +157,9 @@ async def send_part(call: CallbackQuery):
                     await call.answer()
                     return
 
-                cur.execute(q("UPDATE parts SET views = views + 1 WHERE id=?"), (part_id,))
+                cur.execute(q(
+                    "UPDATE parts SET views = views + 1 WHERE id=?"
+                ), (part_id,))
                 conn.commit()
 
         title, desc, video_id, views = part
@@ -204,11 +206,11 @@ async def stats(msg: Message):
 # ================= WEBHOOK =================
 async def on_startup(app):
     await bot.set_webhook(WEBHOOK_URL)
-    print("Webhook o‘rnatildi")
+    print("[INFO] Webhook o‘rnatildi")
 
 async def on_shutdown(app):
     await bot.session.close()
-    print("Bot to‘xtadi")
+    print("[INFO] Bot to‘xtadi")
 
 def main():
     app = web.Application()
