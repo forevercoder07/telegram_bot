@@ -1,9 +1,6 @@
 aiogram==3.4.1
 
 aiohttp==3.9.5
-yarl==1.9.7
-multidict==6.0.5
-frozenlist==1.4.1
 
 pydantic==2.5.3
 pydantic-core==2.14.6
